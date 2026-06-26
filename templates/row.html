@@ -1,0 +1,16 @@
+<tr>
+  <td>{{.Name}}</td>
+  <td><code>{{.OID}}</code></td>
+  <td>{{.Type}}</td>
+  <td class="current">{{.Current}}</td>
+  <td class="options">
+    {{$cur := .CurrentIndex}}{{$oid := .OID}}
+    {{range $i, $opt := .Options}}
+    <button hx-post="/set"
+            hx-vals='{"oid":"{{$oid}}","index":{{$i}}}'
+            hx-target="closest tr"
+            hx-swap="outerHTML"
+            {{if eq $i $cur}}class="active" disabled{{end}}>{{$opt}}</button>
+    {{end}}
+  </td>
+</tr>

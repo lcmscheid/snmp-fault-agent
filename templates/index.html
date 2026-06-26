@@ -1,0 +1,58 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>SNMP Test Agent</title>
+  <script src="/static/htmx.min.js"></script>
+  <style>
+    :root { color-scheme: light dark; }
+    body { font-family: system-ui, sans-serif; margin: 2rem auto; max-width: 60rem; padding: 0 1rem; line-height: 1.5; }
+    h1 { margin-bottom: 0.25rem; }
+    h2 { margin-top: 2rem; }
+    .sub { color: #888; margin-top: 0; }
+    .card { border: 1px solid #8884; border-radius: 8px; padding: 1rem 1.25rem; margin: 1rem 0; }
+    dl { display: grid; grid-template-columns: max-content 1fr; gap: 0.25rem 1rem; margin: 0; }
+    dt { font-weight: 600; }
+    dd { margin: 0; }
+    table { border-collapse: collapse; width: 100%; }
+    th, td { text-align: left; padding: 0.5rem 0.6rem; border-bottom: 1px solid #8883; vertical-align: top; }
+    th { font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.04em; color: #888; }
+    code { background: #8882; padding: 0.1rem 0.3rem; border-radius: 4px; }
+    .current { font-weight: 700; }
+    .options { display: flex; flex-wrap: wrap; gap: 0.4rem; }
+    button { cursor: pointer; border: 1px solid #8886; background: transparent; color: inherit;
+             border-radius: 6px; padding: 0.3rem 0.7rem; font: inherit; }
+    button:hover:not(:disabled) { border-color: #4a90d9; }
+    button.active { background: #4a90d9; color: #fff; border-color: #4a90d9; cursor: default; }
+  </style>
+</head>
+<body>
+  <h1>SNMP Test Agent</h1>
+  <p class="sub">SNMPv3 agent listening on <code>{{.Endpoint}}</code></p>
+
+  <h2>Credentials</h2>
+  <div class="card">
+    <dl>
+      <dt>Username</dt><dd>{{.Auth.Username}}</dd>
+      <dt>Security level</dt><dd>{{.Auth.SecurityLevel}}</dd>
+      <dt>Auth protocol</dt><dd>{{if .Auth.AuthProtocol}}{{.Auth.AuthProtocol}}{{else}}none{{end}}</dd>
+      <dt>Auth passphrase</dt><dd><code>{{.Auth.AuthPassphrase}}</code></dd>
+      <dt>Priv protocol</dt><dd>{{if .Auth.PrivProtocol}}{{.Auth.PrivProtocol}}{{else}}none{{end}}</dd>
+      <dt>Priv passphrase</dt><dd><code>{{.Auth.PrivPassphrase}}</code></dd>
+      {{if .Auth.EngineID}}<dt>Engine ID</dt><dd><code>{{.Auth.EngineID}}</code></dd>{{end}}
+    </dl>
+  </div>
+
+  <h2>Values</h2>
+  <p class="sub">The highlighted value is what the agent returns on an SNMP GET. Click to change it.</p>
+  <table>
+    <thead>
+      <tr><th>Name</th><th>OID</th><th>Type</th><th>Current</th><th>Set value</th></tr>
+    </thead>
+    <tbody>
+      {{range .Entries}}{{template "row.html" .}}{{end}}
+    </tbody>
+  </table>
+</body>
+</html>

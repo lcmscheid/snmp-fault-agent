@@ -1,0 +1,34 @@
+{
+  "values": [
+    {
+      "name": "System Description",
+      "oid": "1.3.6.1.2.1.1.1.0",
+      "type": "string",
+      "values": ["Router model A", "Router model B", "Router model C"]
+    },
+    {
+      "name": "System Uptime",
+      "oid": "1.3.6.1.2.1.1.3.0",
+      "type": "timeticks",
+      "values": ["1000", "500000", "99999999"]
+    },
+    {
+      "name": "ifOperStatus.1",
+      "oid": "1.3.6.1.2.1.2.2.1.8.1",
+      "type": "integer",
+      "values": ["1", "2"]
+    },
+    {
+      "name": "ifInOctets.1",
+      "oid": "1.3.6.1.2.1.2.2.1.10.1",
+      "type": "counter",
+      "values": ["0", "123456", "4000000000"]
+    },
+    {
+      "name": "Temperature (C)",
+      "oid": "1.3.6.1.4.1.9999.1.1.0",
+      "type": "gauge",
+      "values": ["20", "45", "85"]
+    }
+  ]
+}
