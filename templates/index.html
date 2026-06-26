@@ -40,7 +40,8 @@
       <dt>Auth passphrase</dt><dd><code>{{.Auth.AuthPassphrase}}</code></dd>
       <dt>Priv protocol</dt><dd>{{if .Auth.PrivProtocol}}{{.Auth.PrivProtocol}}{{else}}none{{end}}</dd>
       <dt>Priv passphrase</dt><dd><code>{{.Auth.PrivPassphrase}}</code></dd>
-      {{if .Auth.EngineID}}<dt>Engine ID</dt><dd><code>{{.Auth.EngineID}}</code></dd>{{end}}
+      <dt>Identity (engine ID)</dt><dd>{{.Auth.EngineIDLabel}}</dd>
+      <dt>Engine ID (wire)</dt><dd><code>{{.Auth.WireEngineID}}</code></dd>
     </dl>
   </div>
 

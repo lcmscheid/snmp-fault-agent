@@ -87,16 +87,56 @@ func (a AuthConfig) UsmUser() gosnmp.UsmSecurityParameters {
 	}
 }
 
-// EngineIDData returns the decoded engine ID data portion (may be empty).
+// defaultEngineLabel is the stable identity used when none is configured, so
+// the engine ID never depends on the host the simulator runs on.
+const defaultEngineLabel = "snmpsim"
+
+// enginePrefix is the fixed 5-byte prefix GoSNMPServer always prepends to the
+// engine ID data: pysnmp enterprise number (20408) + "octets" format byte.
+var enginePrefix = []byte{0x80, 0x00, 0x4f, 0xb8, 0x05}
+
+// EngineIDLabel returns the human-readable identity to display for this agent.
+func (a AuthConfig) EngineIDLabel() string {
+	if v := strings.TrimSpace(a.EngineID); v != "" {
+		return v
+	}
+	return defaultEngineLabel
+}
+
+// EngineIDData returns the engine ID data portion (the octets that follow the
+// fixed prefix). The configured value is treated as a free-form text label so
+// it can read like a device identity (e.g. "printer-lab-3"); prefix it with
+// "0x" to supply raw hex instead.
 func (a AuthConfig) EngineIDData() (string, error) {
-	if strings.TrimSpace(a.EngineID) == "" {
-		return "", nil
+	v := a.EngineIDLabel()
+	var data []byte
+	if strings.HasPrefix(v, "0x") || strings.HasPrefix(v, "0X") {
+		raw, err := hex.DecodeString(v[2:])
+		if err != nil {
+			return "", fmt.Errorf("engineID hex value is invalid: %w", err)
+		}
+		data = raw
+	} else {
+		data = []byte(v)
 	}
-	raw, err := hex.DecodeString(strings.TrimSpace(a.EngineID))
+	if len(data) == 0 {
+		return "", fmt.Errorf("engineID resolves to an empty value")
+	}
+	if len(data) > 27 {
+		return "", fmt.Errorf("engineID is too long: %d bytes (max 27 after the 5-byte prefix)", len(data))
+	}
+	return string(data), nil
+}
+
+// WireEngineID returns the full hex engine ID as it appears on the wire, i.e.
+// the fixed prefix followed by the data portion. This is the value an SNMP
+// client must trust. Returns "" if the configured engineID is invalid.
+func (a AuthConfig) WireEngineID() string {
+	data, err := a.EngineIDData()
 	if err != nil {
-		return "", fmt.Errorf("engineID must be a hex string: %w", err)
+		return ""
 	}
-	return string(raw), nil
+	return hex.EncodeToString(append(append([]byte{}, enginePrefix...), []byte(data)...))
 }
 
 // LoadAuth reads and validates the auth JSON file.

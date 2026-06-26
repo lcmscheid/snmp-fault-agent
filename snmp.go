@@ -46,11 +46,9 @@ func buildAgent(auth *AuthConfig, store *Store) (*server.MasterAgent, error) {
 	}
 
 	sec := server.SecurityConfig{
-		SnmpV3Only: true,
-		Users:      []gosnmp.UsmSecurityParameters{auth.UsmUser()},
-	}
-	if engineID != "" {
-		sec.AuthoritativeEngineID = server.SNMPEngineID{EngineIDData: engineID}
+		SnmpV3Only:            true,
+		Users:                 []gosnmp.UsmSecurityParameters{auth.UsmUser()},
+		AuthoritativeEngineID: server.SNMPEngineID{EngineIDData: engineID},
 	}
 
 	master := &server.MasterAgent{

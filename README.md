@@ -53,16 +53,27 @@ Then open <http://localhost:8080> for the UI.
   "authPassphrase": "authpassword1",
   "privProtocol": "AES",
   "privPassphrase": "privpassword1",
-  "engineID": "8000000001020304"
+  "engineID": "printer-lab-3"
 }
 ```
 
 - `authProtocol`: `none`, `MD5`, `SHA`, `SHA224`, `SHA256`, `SHA384`, `SHA512`
 - `privProtocol`: `none`, `DES`, `AES`, `AES192`, `AES256`, `AES192C`, `AES256C`
-- `engineID` *(optional)*: hex string for the authoritative engine ID data;
-  omit to derive a default from the host.
+- `engineID` *(optional)*: a human-readable **identity label** for this
+  simulated instance (e.g. `printer-lab-3`). Defaults to `snmpsim` so the
+  engine ID is stable and never depends on the host. Prefix with `0x` to supply
+  raw hex instead (e.g. `0x01020304`).
 - The security level (`noAuthNoPriv` / `authNoPriv` / `authPriv`) is inferred
   from which protocols are set.
+
+> **About the engine ID.** The engine ID is this agent's stable unique
+> identity. The underlying library always prepends the fixed prefix
+> `80004fb805` (pysnmp enterprise + "octets" format), so your label rides in
+> the data portion. For example `printer-lab-3` appears on the wire as
+> `80004fb8057072696e7465722d6c61622d33`. The web UI shows both the label and
+> this wire value — use the wire value wherever your client needs to match the
+> agent's engine ID. To describe *what kind* of device this is (e.g. a
+> printer), set `sysObjectID`/`sysDescr` in `values.json`.
 
 ### Values — `values.json`
 
