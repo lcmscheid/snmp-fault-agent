@@ -31,20 +31,21 @@ func main() {
 
 	rng := rand.New(rand.NewSource(time.Now().UnixNano()))
 	store := NewStore(defs, rng)
+	faults := &Faults{}
 
-	master, err := buildAgent(auth, store)
+	master, err := buildAgent(auth, store, faults)
 	if err != nil {
 		log.Fatalf("building SNMP agent: %v", err)
 	}
 
 	// Run the SNMP agent in the background; the web UI runs on the main goroutine.
 	go func() {
-		if err := serveSNMP(*endpoint, master); err != nil {
+		if err := serveSNMP(*endpoint, master, faults, auth); err != nil {
 			log.Fatalf("SNMP agent: %v", err)
 		}
 	}()
 
-	handler := newWebHandler(auth, store, *endpoint)
+	handler := newWebHandler(auth, store, faults, *endpoint)
 	log.Printf("web UI on http://%s", *httpAddr)
 	if err := http.ListenAndServe(*httpAddr, handler); err != nil {
 		log.Fatalf("web UI: %v", err)

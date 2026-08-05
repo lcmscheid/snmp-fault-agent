@@ -15,13 +15,15 @@ var tmpl = template.Must(template.ParseFS(assets, "templates/*.html"))
 
 // pageData is the model passed to the index template.
 type pageData struct {
-	Auth     *AuthConfig
-	Endpoint string
-	Entries  []Entry
+	Auth      *AuthConfig
+	Endpoint  string
+	Entries   []Entry
+	Faults    FaultSet
+	FaultsFmt string
 }
 
 // newWebHandler wires up the HTTP routes for the UI.
-func newWebHandler(auth *AuthConfig, store *Store, snmpEndpoint string) http.Handler {
+func newWebHandler(auth *AuthConfig, store *Store, faults *Faults, snmpEndpoint string) http.Handler {
 	mux := http.NewServeMux()
 
 	mux.Handle("/static/", http.FileServer(http.FS(assets)))
@@ -31,8 +33,48 @@ func newWebHandler(auth *AuthConfig, store *Store, snmpEndpoint string) http.Han
 			http.NotFound(w, r)
 			return
 		}
-		data := pageData{Auth: auth, Endpoint: snmpEndpoint, Entries: store.Entries()}
+		active := faults.Snapshot()
+		data := pageData{
+			Auth:      auth,
+			Endpoint:  snmpEndpoint,
+			Entries:   store.Entries(),
+			Faults:    active,
+			FaultsFmt: active.Describe(),
+		}
 		render(w, "index.html", data)
+	})
+
+	// /faults sets one named fault and returns the refreshed summary line.
+	// An unchecked checkbox posts no value at all, so an empty value means off.
+	mux.HandleFunc("/faults", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		name := r.FormValue("name")
+		value := r.FormValue("value")
+		if value == "" {
+			value = "off"
+		}
+		if err := faults.Set(name, value); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		active := faults.Snapshot()
+		log.Printf("UI faults -> %s", active.Describe())
+		render(w, "faults.html", active.Describe())
+	})
+
+	// /faults/clear disables every fault at once, so a test can return the
+	// agent to well-behaved without unticking each box.
+	mux.HandleFunc("/faults/clear", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		faults.Clear()
+		log.Printf("UI faults cleared")
+		render(w, "faults.html", faults.Snapshot().Describe())
 	})
 
 	// /set selects the active value for an OID and returns the refreshed row.

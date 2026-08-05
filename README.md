@@ -8,6 +8,10 @@ the configured credentials and lets you switch the value each OID returns with a
 click. Each OID starts on a **random** value from its list, so every run looks a
 little different.
 
+Crucially, it can also be told to **[misbehave](#faults)** — returning oversized
+errors, non-increasing OIDs, truncated or corrupted messages. Client code that
+survives broken agents cannot be tested against a correct one.
+
 ```
 ┌─────────────┐   click a value    ┌──────────────┐   SNMPv3 GET    ┌──────────┐
 │  Web UI     │ ─────────────────▶ │ shared state │ ◀────────────── │ your app │
@@ -41,6 +45,69 @@ Then open <http://localhost:8080> for the UI.
 | `-http`     | `:8080`          | `host:port` the web UI listens on             |
 | `-auth`     | `auth.json`      | path to the SNMPv3 credentials JSON file      |
 | `-values`   | `values.json`    | path to the values JSON file                  |
+
+## Faults
+
+An SNMP client carries a lot of code that only ever runs when the agent it is
+talking to is broken: guards against non-increasing OIDs, back-off when a
+response comes back `tooBig`, recovery from truncated or undecodable messages.
+**A correct agent never produces any of those conditions**, so testing only
+against `snmpd` or real hardware leaves precisely that code unexercised.
+
+This agent can be told to be wrong on purpose. Every fault is toggled live from
+the web UI — no restart — and can be driven from a test over HTTP.
+
+| Fault | What the client sees |
+|---|---|
+| **tooBig** | `tooBig` error with an empty varbind list (RFC 3416 §4.2.3). A walking client should shrink `max-repetitions` and retry. |
+| **Non-increasing OID** | The requested OID echoed straight back. An unguarded walk loops forever; `snmpwalk` reports `Error: OID not increasing`. |
+| **genErr** | A generic error instead of a value. |
+| **Duplicate response** | Every response sent twice. The client must ignore the second copy. |
+| **Corrupt a byte** | One bit flipped mid-message. At v3 the digest check fails; at v2c the BER decode does. |
+| **Drop rate** | A fraction of responses silently discarded. Exercises timeout and retry. |
+| **Delay** | Reply held back. Exceed the client's timeout to force a retry. |
+| **Truncate** | Bytes chopped off the end, producing an undecodable message. |
+| **Engine time offset** | Shifts the reported engine time, so an already-synced client sees the clock jump. |
+| **Engine boots bump** | Raises reported engine boots, as if the device had restarted. |
+
+The semantic faults (`tooBig`, non-increasing OID, `genErr`) are applied by
+decoding the agent's own response, mutating it, and re-marshalling — so the
+message is **correctly authenticated and encrypted** and is wrong in exactly the
+intended way, rather than merely failing its digest check.
+
+> **Known limitation.** The two engine-level faults change what the agent
+> *reports*, but cannot provoke a `usmStatsNotInTimeWindows` report: the
+> underlying [GoSNMPServer](https://github.com/slayercat/GoSNMPServer) v0.5.2
+> implements no timeliness check at all — no 150-second window (RFC 3414 §2.2.3)
+> and no `usmStats` reports. Real report generation would have to be added.
+
+### Driving faults from a test
+
+```sh
+# enable one fault
+curl -X POST -d 'name=tooBig&value=on'        http://localhost:8080/faults
+curl -X POST -d 'name=dropRate&value=0.5'     http://localhost:8080/faults
+curl -X POST -d 'name=delayMS&value=3000'     http://localhost:8080/faults
+
+# back to well-behaved
+curl -X POST http://localhost:8080/faults/clear
+```
+
+Fault names match the UI fields: `tooBig`, `nonIncreasingOID`, `genErr`,
+`duplicate`, `corruptByte`, `dropRate`, `delayMS`, `truncateBytes`,
+`engineTimeOffsetS`, `engineBootsBump`.
+
+## Tests
+
+```sh
+go test ./...
+```
+
+The tests start the agent on an ephemeral port and drive it with a real gosnmp
+client. The most important one asserts that a semantically faulted response
+still authenticates — if re-marshalling ever broke the digest, the client would
+report an authentication failure and never see the injected fault, making the
+fault useless.
 
 ## Configuration
 

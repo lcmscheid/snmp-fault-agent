@@ -87,6 +87,22 @@ func (a AuthConfig) UsmUser() gosnmp.UsmSecurityParameters {
 	}
 }
 
+// UsmUserWithEngine is UsmUser plus this agent's authoritative engine ID. The
+// engine ID is required to decode our own v3 traffic, because the privacy and
+// authentication keys are localized to it (RFC 3414 §2.6) — without it,
+// decryption silently produces garbage.
+// It returns a pointer because UsmSecurityParameters embeds a mutex, which must
+// not be copied.
+func (a AuthConfig) UsmUserWithEngine() (*gosnmp.UsmSecurityParameters, error) {
+	data, err := a.EngineIDData()
+	if err != nil {
+		return nil, err
+	}
+	usm := a.UsmUser()
+	usm.AuthoritativeEngineID = string(append(append([]byte{}, enginePrefix...), []byte(data)...))
+	return &usm, nil
+}
+
 // defaultEngineLabel is the stable identity used when none is configured, so
 // the engine ID never depends on the host the simulator runs on.
 const defaultEngineLabel = "snmpsim"

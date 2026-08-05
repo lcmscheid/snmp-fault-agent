@@ -25,6 +25,13 @@
              border-radius: 6px; padding: 0.3rem 0.7rem; font: inherit; }
     button:hover:not(:disabled) { border-color: #4a90d9; }
     button.active { background: #4a90d9; color: #fff; border-color: #4a90d9; cursor: default; }
+    .faults { display: grid; grid-template-columns: repeat(auto-fit, minmax(15rem, 1fr)); gap: 0.6rem 1.5rem; }
+    .faults label { display: flex; align-items: center; gap: 0.5rem; }
+    .faults input[type=number] { width: 6rem; font: inherit; padding: 0.2rem 0.3rem;
+                                 background: transparent; color: inherit; border: 1px solid #8886; border-radius: 4px; }
+    .fault-summary { font-weight: 600; }
+    .fault-summary.on { color: #d98a4a; }
+    .hint { color: #888; font-size: 0.85rem; margin: 0.2rem 0 0; }
   </style>
 </head>
 <body>
@@ -43,6 +50,77 @@
       <dt>Identity (engine ID)</dt><dd>{{.Auth.EngineIDLabel}}</dd>
       <dt>Engine ID (wire)</dt><dd><code>{{.Auth.WireEngineID}}</code></dd>
     </dl>
+  </div>
+
+  <h2>Faults</h2>
+  <p class="sub">
+    Make the agent misbehave on purpose. A correct agent never produces these, so they are the only
+    way to reach a client's defensive paths. Active: {{template "faults.html" .FaultsFmt}}
+  </p>
+  <div class="card">
+    <div class="faults"
+         hx-post="/faults" hx-trigger="change" hx-target="#fault-summary" hx-swap="outerHTML">
+
+      <label title="Return a tooBig error. A walking client should reduce max-repetitions and retry.">
+        <input type="checkbox" name="value" value="on"
+               hx-vals='{"name":"tooBig"}' {{if .Faults.TooBig}}checked{{end}}> tooBig
+      </label>
+
+      <label title="Echo the requested OID back. A walk without a non-increasing-OID guard loops forever.">
+        <input type="checkbox" name="value" value="on"
+               hx-vals='{"name":"nonIncreasingOID"}' {{if .Faults.NonIncreasingOID}}checked{{end}}> Non-increasing OID
+      </label>
+
+      <label title="Return a generic error instead of the value.">
+        <input type="checkbox" name="value" value="on"
+               hx-vals='{"name":"genErr"}' {{if .Faults.GenErr}}checked{{end}}> genErr
+      </label>
+
+      <label title="Send every response twice. The client must ignore the second copy.">
+        <input type="checkbox" name="value" value="on"
+               hx-vals='{"name":"duplicate"}' {{if .Faults.Duplicate}}checked{{end}}> Duplicate response
+      </label>
+
+      <label title="Flip one bit mid-message. At v3 the digest check fails; at v2c the BER decode does.">
+        <input type="checkbox" name="value" value="on"
+               hx-vals='{"name":"corruptByte"}' {{if .Faults.CorruptByte}}checked{{end}}> Corrupt a byte
+      </label>
+
+      <label title="Fraction of responses silently dropped, 0 to 1. Exercises timeout and retry.">
+        Drop rate
+        <input type="number" name="value" min="0" max="1" step="0.1"
+               value="{{.Faults.DropRate}}" hx-vals='{"name":"dropRate"}'>
+      </label>
+
+      <label title="Milliseconds to wait before replying. Exceed the client timeout to force a retry.">
+        Delay (ms)
+        <input type="number" name="value" min="0" max="60000" step="100"
+               value="{{.Faults.Delay.Milliseconds}}" hx-vals='{"name":"delayMS"}'>
+      </label>
+
+      <label title="Bytes chopped off the end of the response, producing an undecodable message.">
+        Truncate (bytes)
+        <input type="number" name="value" min="0" max="1024" step="1"
+               value="{{.Faults.TruncateBytes}}" hx-vals='{"name":"truncateBytes"}'>
+      </label>
+
+      <label title="Seconds added to the reported engine time, so an already-synced client sees the clock jump. Note: the underlying library performs no timeliness check, so this cannot produce a notInTimeWindow report.">
+        Engine time offset (s)
+        <input type="number" name="value" min="-2000000" max="2000000" step="60"
+               value="{{.Faults.EngineTimeOffset.Seconds}}" hx-vals='{"name":"engineTimeOffsetS"}'>
+      </label>
+
+      <label title="Added to the reported engine boots, as if the device had restarted. Changes what is reported only; no Report PDU is generated.">
+        Engine boots bump
+        <input type="number" name="value" min="0" max="1000000" step="1"
+               value="{{.Faults.EngineBootsBump}}" hx-vals='{"name":"engineBootsBump"}'>
+      </label>
+    </div>
+
+    <p class="hint">
+      <button hx-post="/faults/clear" hx-target="#fault-summary" hx-swap="outerHTML">Clear all faults</button>
+      Changes apply to the next request; no restart needed.
+    </p>
   </div>
 
   <h2>Values</h2>
