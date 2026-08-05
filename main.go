@@ -1,4 +1,4 @@
-// Command snmpsim is a small SNMPv3 agent for testing SNMP applications.
+// Command snmpfault is a small SNMPv3 agent for testing SNMP applications.
 //
 // It serves a configurable set of OIDs over SNMPv3 and exposes a minimal
 // htmx web UI to inspect the credentials and switch the value each OID

@@ -105,7 +105,7 @@ func (a AuthConfig) UsmUserWithEngine() (*gosnmp.UsmSecurityParameters, error) {
 
 // defaultEngineLabel is the stable identity used when none is configured, so
 // the engine ID never depends on the host the simulator runs on.
-const defaultEngineLabel = "snmpsim"
+const defaultEngineLabel = "snmpfault"
 
 // enginePrefix is the fixed 5-byte prefix GoSNMPServer always prepends to the
 // engine ID data: pysnmp enterprise number (20408) + "octets" format byte.

@@ -1,20 +1,26 @@
-# SNMP Test Agent
+# snmp-fault-agent
 
-A small, self-contained **SNMPv3 agent** for testing SNMP applications.
+**An SNMP agent that misbehaves on purpose.**
+
+The most interesting code in an SNMP client only runs when the agent it is
+talking to is broken — guards against non-increasing OIDs, back-off when a
+response comes back `tooBig`, recovery from truncated messages. A correct agent
+never produces any of that, so testing against `snmpd` or real hardware leaves
+precisely that code unexercised. This agent produces it on demand.
 
 It serves a configurable set of OIDs over SNMPv3 and ships with a minimal web UI
 (server-rendered, [htmx](https://htmx.org), no hand-written JavaScript) that shows
-the configured credentials and lets you switch the value each OID returns with a
-click. Each OID starts on a **random** value from its list, so every run looks a
-little different.
+the configured credentials, lets you switch the value each OID returns with a
+click, and lets you toggle [faults](#faults) live. Each OID starts on a **random**
+value from its list, so every run looks a little different.
 
-Crucially, it can also be told to **[misbehave](#faults)** — returning oversized
-errors, non-increasing OIDs, truncated or corrupted messages. Client code that
-survives broken agents cannot be tested against a correct one.
+> Not to be confused with [snmpsim](https://github.com/etingof/snmpsim), which
+> replays recorded footprints of real devices and simulates agents behaving
+> *correctly*. This one is deliberately wrong.
 
 ```
 ┌─────────────┐   click a value    ┌──────────────┐   SNMPv3 GET    ┌──────────┐
-│  Web UI     │ ─────────────────▶ │ shared state │ ◀────────────── │ your app │
+│  Web UI     │ ── value / fault ▶ │ shared state │ ◀── SNMPv3 req ─ │ your app │
 │  (htmx)     │                    │  (current)   │ ──────────────▶ │ (client) │
 └─────────────┘                    └──────────────┘                 └──────────┘
 ```
@@ -22,13 +28,13 @@ survives broken agents cannot be tested against a correct one.
 ## Build
 
 ```sh
-go build -o snmpsim .
+go build -o snmpfault .
 ```
 
 ## Run
 
 ```sh
-./snmpsim -endpoint 0.0.0.0:1161 -http :8080 \
+./snmpfault -endpoint 0.0.0.0:1161 -http :8080 \
           -auth examples/auth.json -values examples/values.json
 ```
 
@@ -127,7 +133,7 @@ fault useless.
 - `authProtocol`: `none`, `MD5`, `SHA`, `SHA224`, `SHA256`, `SHA384`, `SHA512`
 - `privProtocol`: `none`, `DES`, `AES`, `AES192`, `AES256`, `AES192C`, `AES256C`
 - `engineID` *(optional)*: a human-readable **identity label** for this
-  simulated instance (e.g. `printer-lab-3`). Defaults to `snmpsim` so the
+  simulated instance (e.g. `printer-lab-3`). Defaults to `snmpfault` so the
   engine ID is stable and never depends on the host. Prefix with `0x` to supply
   raw hex instead (e.g. `0x01020304`).
 - The security level (`noAuthNoPriv` / `authNoPriv` / `authPriv`) is inferred
