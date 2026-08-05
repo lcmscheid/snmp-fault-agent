@@ -1,0 +1,9 @@
+snmp-fault-agent
+Copyright 2026 Luiz Carlos Martins Scheid
+
+This product includes software developed by third parties:
+
+  - GoSNMPServer (https://github.com/slayercat/GoSNMPServer) — the SNMP agent
+    engine this tool drives.
+  - gosnmp (https://github.com/gosnmp/gosnmp) — SNMP message encoding, USM and
+    the client used in the tests. BSD-3-Clause.
