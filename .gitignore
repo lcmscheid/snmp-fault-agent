@@ -1,2 +1,16 @@
+# Compiled binary — never commit build output
+/snmpfault
 /snmpsim
 *.exe
+*.test
+
+# Go build and coverage artifacts
+*.out
+coverage.*
+
+# Editor / OS
+.vscode/
+.idea/
+*.swp
+*~
+.DS_Store
