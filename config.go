@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -10,20 +11,49 @@ import (
 	"github.com/gosnmp/gosnmp"
 )
 
-// AuthConfig holds the SNMPv3 USM credentials loaded from the auth JSON file.
-type AuthConfig struct {
+// UserConfig is one SNMPv3 USM user. The agent serves several at once so a
+// client's protocol matrix — every auth protocol against every privacy protocol
+// — can be exercised against a single running instance instead of one agent per
+// combination.
+type UserConfig struct {
 	Username       string `json:"username"`
 	AuthProtocol   string `json:"authProtocol"`   // none, MD5, SHA, SHA224, SHA256, SHA384, SHA512
 	AuthPassphrase string `json:"authPassphrase"` // shared authentication secret
 	PrivProtocol   string `json:"privProtocol"`   // none, DES, AES, AES192, AES256, AES192C, AES256C
 	PrivPassphrase string `json:"privPassphrase"` // shared privacy secret
-	EngineID       string `json:"engineID"`       // optional hex string; default derived from host
 }
 
-// SecurityLevel returns a human readable SNMPv3 security level for display.
-func (a AuthConfig) SecurityLevel() string {
-	auth := a.authProto() > gosnmp.NoAuth
-	priv := a.privProto() > gosnmp.NoPriv
+// AuthConfig is the agent's identity and credentials, loaded from the auth JSON
+// file.
+type AuthConfig struct {
+	EngineID  string       `json:"engineID"`  // optional hex string or free-form label
+	Community string       `json:"community"` // v2c community; empty disables v2c
+	Users     []UserConfig `json:"users"`
+}
+
+// defaultCommunity is used when the auth file names none. v2c is on by default
+// because a client under development reaches v2c long before it can speak v3,
+// and an agent that has to be configured before it answers at all is friction
+// in exactly the wrong place.
+const defaultCommunity = "public"
+
+// V2CEnabled reports whether the agent answers SNMPv1/v2c requests.
+//
+// An empty community is the off switch rather than a wildcard, because the
+// empty string is already taken: the underlying library routes v3 by context
+// name and v1/v2c by community through the same table, and the standard empty
+// v3 context is registered under "".
+func (a AuthConfig) V2CEnabled() bool { return a.Community != "" }
+
+// SecurityLevel returns the SNMPv3 security level this user's protocols imply.
+//
+// Note that the agent *infers* the level here while an SNMP client should
+// *require* it explicitly: a client that silently downgrades authPriv to
+// authNoPriv has a security hole, whereas a test agent that accepts whatever
+// arrives is merely convenient.
+func (u UserConfig) SecurityLevel() string {
+	auth := u.authProto() > gosnmp.NoAuth
+	priv := u.privProto() > gosnmp.NoPriv
 	switch {
 	case auth && priv:
 		return "authPriv"
@@ -34,71 +64,121 @@ func (a AuthConfig) SecurityLevel() string {
 	}
 }
 
-func (a AuthConfig) authProto() gosnmp.SnmpV3AuthProtocol {
-	switch strings.ToUpper(strings.TrimSpace(a.AuthProtocol)) {
-	case "", "NONE", "NOAUTH":
-		return gosnmp.NoAuth
-	case "MD5":
-		return gosnmp.MD5
-	case "SHA":
-		return gosnmp.SHA
-	case "SHA224":
-		return gosnmp.SHA224
-	case "SHA256":
-		return gosnmp.SHA256
-	case "SHA384":
-		return gosnmp.SHA384
-	case "SHA512":
-		return gosnmp.SHA512
-	default:
-		return gosnmp.NoAuth
-	}
+// authProtocols maps the names accepted in the config file to gosnmp's
+// constants. Lookup is on the upper-cased, trimmed name.
+var authProtocols = map[string]gosnmp.SnmpV3AuthProtocol{
+	"":       gosnmp.NoAuth,
+	"NONE":   gosnmp.NoAuth,
+	"NOAUTH": gosnmp.NoAuth,
+	"MD5":    gosnmp.MD5,
+	"SHA":    gosnmp.SHA,
+	"SHA224": gosnmp.SHA224,
+	"SHA256": gosnmp.SHA256,
+	"SHA384": gosnmp.SHA384,
+	"SHA512": gosnmp.SHA512,
 }
 
-func (a AuthConfig) privProto() gosnmp.SnmpV3PrivProtocol {
-	switch strings.ToUpper(strings.TrimSpace(a.PrivProtocol)) {
-	case "", "NONE", "NOPRIV":
-		return gosnmp.NoPriv
-	case "DES":
-		return gosnmp.DES
-	case "AES":
-		return gosnmp.AES
-	case "AES192":
-		return gosnmp.AES192
-	case "AES256":
-		return gosnmp.AES256
-	case "AES192C":
-		return gosnmp.AES192C
-	case "AES256C":
-		return gosnmp.AES256C
-	default:
-		return gosnmp.NoPriv
-	}
+// privProtocols maps config names to gosnmp's privacy constants. The C suffix
+// on AES192C/AES256C marks the Reeder key-extension variant, which is
+// incompatible with the plain Blumenthal form of the same cipher; both are
+// offered so a client can be tested against either.
+var privProtocols = map[string]gosnmp.SnmpV3PrivProtocol{
+	"":        gosnmp.NoPriv,
+	"NONE":    gosnmp.NoPriv,
+	"NOPRIV":  gosnmp.NoPriv,
+	"DES":     gosnmp.DES,
+	"AES":     gosnmp.AES,
+	"AES192":  gosnmp.AES192,
+	"AES256":  gosnmp.AES256,
+	"AES192C": gosnmp.AES192C,
+	"AES256C": gosnmp.AES256C,
 }
 
-// UsmUser converts the config into the gosnmp USM parameters used by the agent.
-func (a AuthConfig) UsmUser() gosnmp.UsmSecurityParameters {
+func protoKey(s string) string { return strings.ToUpper(strings.TrimSpace(s)) }
+
+func (u UserConfig) authProto() gosnmp.SnmpV3AuthProtocol {
+	return authProtocols[protoKey(u.AuthProtocol)]
+}
+
+func (u UserConfig) privProto() gosnmp.SnmpV3PrivProtocol {
+	return privProtocols[protoKey(u.PrivProtocol)]
+}
+
+// validate rejects a user the agent could not serve as written. Unknown
+// protocol names are an error rather than a fallback to "none": a typo that
+// silently downgrades the user to noAuthNoPriv makes every authPriv request
+// fail with nothing explaining why.
+func (u UserConfig) validate() error {
+	if strings.TrimSpace(u.Username) == "" {
+		return errors.New("username is required")
+	}
+	if _, ok := authProtocols[protoKey(u.AuthProtocol)]; !ok {
+		return fmt.Errorf("user %q: unknown authProtocol %q", u.Username, u.AuthProtocol)
+	}
+	if _, ok := privProtocols[protoKey(u.PrivProtocol)]; !ok {
+		return fmt.Errorf("user %q: unknown privProtocol %q", u.Username, u.PrivProtocol)
+	}
+	if u.authProto() > gosnmp.NoAuth && u.AuthPassphrase == "" {
+		return fmt.Errorf("user %q: authProtocol %s needs an authPassphrase", u.Username, u.AuthProtocol)
+	}
+	if u.privProto() > gosnmp.NoPriv && u.PrivPassphrase == "" {
+		return fmt.Errorf("user %q: privProtocol %s needs a privPassphrase", u.Username, u.PrivProtocol)
+	}
+	// RFC 3414 §2.2: privacy without authentication is not a valid combination,
+	// since the privacy key is derived from the authentication key.
+	if u.privProto() > gosnmp.NoPriv && u.authProto() == gosnmp.NoAuth {
+		return fmt.Errorf("user %q: privacy requires authentication (RFC 3414 §2.2)", u.Username)
+	}
+	return nil
+}
+
+// UsmUser converts the user into the gosnmp USM parameters the agent serves.
+func (u UserConfig) UsmUser() gosnmp.UsmSecurityParameters {
 	return gosnmp.UsmSecurityParameters{
-		UserName:                 a.Username,
-		AuthenticationProtocol:   a.authProto(),
-		AuthenticationPassphrase: a.AuthPassphrase,
-		PrivacyProtocol:          a.privProto(),
-		PrivacyPassphrase:        a.PrivPassphrase,
+		UserName:                 u.Username,
+		AuthenticationProtocol:   u.authProto(),
+		AuthenticationPassphrase: u.AuthPassphrase,
+		PrivacyProtocol:          u.privProto(),
+		PrivacyPassphrase:        u.PrivPassphrase,
 	}
 }
 
-// UsmUserWithEngine is UsmUser plus this agent's authoritative engine ID. The
-// engine ID is required to decode our own v3 traffic, because the privacy and
-// authentication keys are localized to it (RFC 3414 §2.6) — without it,
-// decryption silently produces garbage.
+// UsmUsers returns every configured user, for the agent's security config.
+func (a AuthConfig) UsmUsers() []gosnmp.UsmSecurityParameters {
+	out := make([]gosnmp.UsmSecurityParameters, 0, len(a.Users))
+	for _, u := range a.Users {
+		out = append(out, u.UsmUser())
+	}
+	return out
+}
+
+// FindUser looks a user up by the name carried in a request.
+func (a AuthConfig) FindUser(username string) (UserConfig, bool) {
+	for _, u := range a.Users {
+		if u.Username == username {
+			return u, true
+		}
+	}
+	return UserConfig{}, false
+}
+
+// UsmUserWithEngine returns the named user's USM parameters with this agent's
+// authoritative engine ID attached, which is what lets us decode our own v3
+// traffic: the privacy and authentication keys are localized to the engine ID
+// (RFC 3414 §2.6), and without it key derivation produces a zero-length key.
+//
 // It returns a pointer because UsmSecurityParameters embeds a mutex, which must
 // not be copied.
-func (a AuthConfig) UsmUserWithEngine() (*gosnmp.UsmSecurityParameters, error) {
+func (a AuthConfig) UsmUserWithEngine(username string) (*gosnmp.UsmSecurityParameters, error) {
+	u, ok := a.FindUser(username)
+	if !ok {
+		return nil, fmt.Errorf("no configured user named %q", username)
+	}
 	data, err := a.EngineIDData()
 	if err != nil {
 		return nil, err
 	}
-	usm := a.UsmUser()
+	usm := u.UsmUser()
 	usm.AuthoritativeEngineID = string(append(append([]byte{}, enginePrefix...), []byte(data)...))
 	return &usm, nil
 }
@@ -155,23 +235,66 @@ func (a AuthConfig) WireEngineID() string {
 	return hex.EncodeToString(append(append([]byte{}, enginePrefix...), []byte(data)...))
 }
 
+// authFile is the on-disk shape of the auth JSON. It carries the multi-user
+// form and, inline, the fields of the original single-user form, so files
+// written against the earlier schema keep loading.
+type authFile struct {
+	EngineID  string       `json:"engineID"`
+	Community *string      `json:"community"` // pointer so "unset" is distinguishable from ""
+	Users     []UserConfig `json:"users"`
+
+	// The flat single-user form.
+	UserConfig
+}
+
 // LoadAuth reads and validates the auth JSON file.
 func LoadAuth(path string) (*AuthConfig, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, err
 	}
-	var cfg AuthConfig
-	if err := json.Unmarshal(data, &cfg); err != nil {
+	var f authFile
+	if err := json.Unmarshal(data, &f); err != nil {
 		return nil, fmt.Errorf("parsing %s: %w", path, err)
 	}
-	if strings.TrimSpace(cfg.Username) == "" {
-		return nil, fmt.Errorf("%s: username is required", path)
+
+	cfg := &AuthConfig{EngineID: f.EngineID, Users: f.Users}
+
+	// An unset community means the default; an explicit "" means v2c off.
+	if f.Community == nil {
+		cfg.Community = defaultCommunity
+	} else {
+		cfg.Community = *f.Community
 	}
+
+	// The flat form: the user's fields sit at the top level. Accept it only when
+	// there is no users array, so a file cannot half-use both shapes and leave
+	// the reader guessing which one won.
+	if len(cfg.Users) == 0 && strings.TrimSpace(f.Username) != "" {
+		cfg.Users = []UserConfig{f.UserConfig}
+	} else if len(cfg.Users) > 0 && strings.TrimSpace(f.Username) != "" {
+		return nil, fmt.Errorf("%s: use either a top-level user or a \"users\" array, not both", path)
+	}
+
+	if len(cfg.Users) == 0 {
+		return nil, fmt.Errorf("%s: no users defined", path)
+	}
+
+	seen := make(map[string]bool, len(cfg.Users))
+	for i, u := range cfg.Users {
+		if err := u.validate(); err != nil {
+			return nil, fmt.Errorf("%s: user #%d: %w", path, i+1, err)
+		}
+		if seen[u.Username] {
+			return nil, fmt.Errorf("%s: duplicate username %q", path, u.Username)
+		}
+		seen[u.Username] = true
+	}
+
 	if _, err := cfg.EngineIDData(); err != nil {
 		return nil, err
 	}
-	return &cfg, nil
+	return cfg, nil
 }
 
 // ValueFile is the on-disk representation of the values JSON file.
@@ -185,6 +308,10 @@ type ValueDef struct {
 	OID     string   `json:"oid"`
 	Type    string   `json:"type"` // string, integer, gauge, counter, timeticks, oid
 	Options []string `json:"values"`
+	// ReadOnly refuses SET on this OID, so the agent answers with the readOnly
+	// error. A client's SET error handling is otherwise unreachable without a
+	// real device that happens to expose a non-writable object.
+	ReadOnly bool `json:"readOnly"`
 }
 
 // LoadValues reads and validates the values JSON file.

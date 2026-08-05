@@ -1,92 +1,10 @@
 package main
 
 import (
-	"fmt"
-	"math/rand"
-	"net"
 	"testing"
-	"time"
 
 	"github.com/gosnmp/gosnmp"
 )
-
-// startTestAgent brings up the agent on a free UDP port and returns the
-// endpoint plus the fault set controlling it.
-func startTestAgent(t *testing.T) (string, *Faults) {
-	t.Helper()
-
-	auth, err := LoadAuth("examples/auth.json")
-	if err != nil {
-		t.Fatalf("loading auth: %v", err)
-	}
-	defs, err := LoadValues("examples/values.json")
-	if err != nil {
-		t.Fatalf("loading values: %v", err)
-	}
-
-	store := NewStore(defs, rand.New(rand.NewSource(1)))
-	faults := &Faults{}
-
-	master, err := buildAgent(auth, store, faults)
-	if err != nil {
-		t.Fatalf("building agent: %v", err)
-	}
-
-	// Ask the kernel for a free port, then hand the address to the agent.
-	probe, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
-	if err != nil {
-		t.Fatalf("reserving port: %v", err)
-	}
-	endpoint := probe.LocalAddr().String()
-	probe.Close()
-
-	go func() {
-		if err := serveSNMP(endpoint, master, faults, auth); err != nil {
-			// The test process exits before this matters; log only.
-			fmt.Printf("agent stopped: %v\n", err)
-		}
-	}()
-
-	// Give the listener a moment to bind the port we just released.
-	time.Sleep(200 * time.Millisecond)
-	return endpoint, faults
-}
-
-// newClient returns a gosnmp v3 client matching examples/auth.json.
-func newClient(t *testing.T, endpoint string) *gosnmp.GoSNMP {
-	t.Helper()
-
-	host, portStr, err := net.SplitHostPort(endpoint)
-	if err != nil {
-		t.Fatalf("splitting endpoint: %v", err)
-	}
-	var port uint16
-	if _, err := fmt.Sscanf(portStr, "%d", &port); err != nil {
-		t.Fatalf("parsing port: %v", err)
-	}
-
-	client := &gosnmp.GoSNMP{
-		Target:        host,
-		Port:          port,
-		Version:       gosnmp.Version3,
-		SecurityModel: gosnmp.UserSecurityModel,
-		MsgFlags:      gosnmp.AuthPriv,
-		Timeout:       2 * time.Second,
-		Retries:       0,
-		SecurityParameters: &gosnmp.UsmSecurityParameters{
-			UserName:                 "testuser",
-			AuthenticationProtocol:   gosnmp.SHA,
-			AuthenticationPassphrase: "authpassword1",
-			PrivacyProtocol:          gosnmp.AES,
-			PrivacyPassphrase:        "privpassword1",
-		},
-	}
-	if err := client.Connect(); err != nil {
-		t.Fatalf("connecting: %v", err)
-	}
-	t.Cleanup(func() { client.Conn.Close() })
-	return client
-}
 
 const sysDescr = "1.3.6.1.2.1.1.1.0"
 

@@ -1,7 +1,7 @@
 <tr>
   <td>{{.Name}}</td>
   <td><code>{{.OID}}</code></td>
-  <td>{{.Type}}</td>
+  <td>{{.Type}}{{if .ReadOnly}} <span class="ro" title="SET is refused with the readOnly error">read-only</span>{{end}}</td>
   <td class="current">{{.Current}}</td>
   <td class="options">
     {{$cur := .CurrentIndex}}{{$oid := .OID}}

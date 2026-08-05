@@ -8,32 +8,48 @@ response comes back `tooBig`, recovery from truncated messages. A correct agent
 never produces any of that, so testing against `snmpd` or real hardware leaves
 precisely that code unexercised. This agent produces it on demand.
 
-It serves a configurable set of OIDs over SNMPv3 and ships with a minimal web UI
-(server-rendered, [htmx](https://htmx.org), no hand-written JavaScript) that shows
-the configured credentials, lets you switch the value each OID returns with a
-click, and lets you toggle [faults](#faults) live. Each OID starts on a **random**
-value from its list, so every run looks a little different.
+It serves a configurable set of OIDs over **SNMPv3 and SNMPv2c**, answers **GET,
+GETNEXT, GETBULK and SET**, and serves **as many USM users as you configure** —
+so a client's whole auth × privacy matrix runs against one instance instead of
+one agent per combination. It ships with a minimal web UI (server-rendered,
+[htmx](https://htmx.org), no hand-written JavaScript) that shows the configured
+credentials, lets you switch the value each OID returns with a click, and lets
+you toggle [faults](#faults) live. Each OID starts on a **random** value from its
+list, so every run looks a little different.
 
 > Not to be confused with [snmpsim](https://github.com/etingof/snmpsim), which
 > replays recorded footprints of real devices and simulates agents behaving
 > *correctly*. This one is deliberately wrong.
 
 ```
-┌─────────────┐   click a value    ┌──────────────┐   SNMPv3 GET    ┌──────────┐
-│  Web UI     │ ── value / fault ▶ │ shared state │ ◀── SNMPv3 req ─ │ your app │
-│  (htmx)     │                    │  (current)   │ ──────────────▶ │ (client) │
-└─────────────┘                    └──────────────┘                 └──────────┘
+┌─────────────┐   click a value    ┌──────────────┐  v3 / v2c reply  ┌──────────┐
+│  Web UI     │ ── value / fault ▶ │ shared state │ ◀── GET / SET ── │ your app │
+│  (htmx)     │                    │  (current)   │ ───────────────▶ │ (client) │
+└─────────────┘                    └──────────────┘                  └──────────┘
 ```
 
-## Build
+## Run it
+
+### Container
+
+```sh
+docker run --rm -p 1161:1161/udp -p 8080:8080 ghcr.io/lcmscheid/snmp-fault-agent
+```
+
+The image carries the example configuration, so it answers immediately. Mount
+your own over `/etc/snmpfault/auth.json` and `/etc/snmpfault/values.json` to
+replace it:
+
+```sh
+docker run --rm -p 1161:1161/udp -p 8080:8080 \
+  -v "$PWD/auth.json:/etc/snmpfault/auth.json:ro" \
+  ghcr.io/lcmscheid/snmp-fault-agent
+```
+
+### From source
 
 ```sh
 go build -o snmpfault .
-```
-
-## Run
-
-```sh
 ./snmpfault -endpoint 0.0.0.0:1161 -http :8080 \
           -auth examples/auth.json -values examples/values.json
 ```
@@ -41,7 +57,9 @@ go build -o snmpfault .
 Then open <http://localhost:8080> for the UI.
 
 > Ports below 1024 (such as the standard SNMP port 161) require elevated
-> privileges; the examples use 1161.
+> privileges; the examples use 1161. The container runs as a non-root user and
+> so cannot bind 161 inside the container either — publish it on the host with
+> `-p 161:1161/udp` if you need the standard port.
 
 ### Flags
 
@@ -49,8 +67,21 @@ Then open <http://localhost:8080> for the UI.
 |-------------|------------------|-----------------------------------------------|
 | `-endpoint` | `0.0.0.0:1161`   | UDP `host:port` the SNMP agent listens on     |
 | `-http`     | `:8080`          | `host:port` the web UI listens on             |
-| `-auth`     | `auth.json`      | path to the SNMPv3 credentials JSON file      |
+| `-auth`     | `auth.json`      | path to the credentials JSON file             |
 | `-values`   | `values.json`    | path to the values JSON file                  |
+
+## Operations
+
+| Operation | Notes |
+|---|---|
+| **GET / GETNEXT / GETBULK** | Over SNMPv2c and SNMPv3. GETNEXT is what a walk is built from. |
+| **SET** | Writes the value and returns it on the next read. A value not already in the OID's list is **appended as a new option and selected**, so the write shows up in the web UI. |
+| **SET on a read-only OID** | Refused with `readOnly`. Mark an OID with `"readOnly": true` in `values.json`. |
+| **SET with the wrong type** | Refused with `genErr`. (An RFC 3416 §4.2.5 agent would send `wrongType`; the underlying library offers no way to return it.) |
+
+Both SNMP versions are served at once. v2c exists here because a client under
+development reaches v2c long before it can speak v3, and it needs a
+fault-injecting target for that whole stage.
 
 ## Faults
 
@@ -111,9 +142,14 @@ go test ./...
 
 The tests start the agent on an ephemeral port and drive it with a real gosnmp
 client. The most important one asserts that a semantically faulted response
-still authenticates — if re-marshalling ever broke the digest, the client would
+still authenticates, **for every configured user** — if re-marshalling ever broke
+the digest, or the fault path reached for the wrong user's keys, the client would
 report an authentication failure and never see the injected fault, making the
 fault useless.
+
+CI additionally builds the container image and drives the running container with
+real `net-snmp` tools, so an image that starts but does not answer is never
+published.
 
 ## Configuration
 
@@ -121,23 +157,86 @@ fault useless.
 
 ```json
 {
-  "username": "testuser",
-  "authProtocol": "SHA",
-  "authPassphrase": "authpassword1",
-  "privProtocol": "AES",
-  "privPassphrase": "privpassword1",
-  "engineID": "printer-lab-3"
+  "engineID": "printer-lab-3",
+  "community": "public",
+  "users": [
+    {
+      "username": "testuser",
+      "authProtocol": "SHA",
+      "authPassphrase": "authpassword1",
+      "privProtocol": "AES",
+      "privPassphrase": "privpassword1"
+    },
+    {
+      "username": "sha512aes256",
+      "authProtocol": "SHA512",
+      "authPassphrase": "authpassword1",
+      "privProtocol": "AES256",
+      "privPassphrase": "privpassword1"
+    },
+    { "username": "noauthuser" }
+  ]
 }
 ```
 
+- `users`: every USM user this agent serves. Listing several lets one instance
+  cover a client's auth × privacy combinations. `examples/auth.json` ships
+  fifteen, using every supported protocol at least once — not the full 7 × 7
+  cross product, but every protocol and both key-extension schemes.
 - `authProtocol`: `none`, `MD5`, `SHA`, `SHA224`, `SHA256`, `SHA384`, `SHA512`
 - `privProtocol`: `none`, `DES`, `AES`, `AES192`, `AES256`, `AES192C`, `AES256C`
+  — the `C` suffix is the **Reeder** key-extension variant, which is
+  incompatible with the plain Blumenthal form of the same cipher. Both are
+  offered because deployed devices differ in which they expect. **3DES is not
+  available**: the underlying gosnmp has no implementation of it, so testing a
+  client's 3DES path needs real hardware.
+- `community` *(optional)*: the SNMPv2c community. Defaults to `public`. Set it
+  to `""` to serve **v3 only**.
 - `engineID` *(optional)*: a human-readable **identity label** for this
   simulated instance (e.g. `printer-lab-3`). Defaults to `snmpfault` so the
   engine ID is stable and never depends on the host. Prefix with `0x` to supply
   raw hex instead (e.g. `0x01020304`).
 - The security level (`noAuthNoPriv` / `authNoPriv` / `authPriv`) is inferred
-  from which protocols are set.
+  from which protocols are set. An unknown protocol name is an **error**, not a
+  silent fall back to `none` — a typo that quietly downgrades a user makes every
+  authPriv request fail with nothing explaining why.
+
+#### A trap when testing AES-192/256 key extensions
+
+AES-192 and AES-256 need more key material than most hashes produce, so the
+localized key is **extended** — by one of two mutually incompatible schemes,
+Blumenthal (`AES192`/`AES256`) or Reeder (`AES192C`/`AES256C`). Both derive
+`localizedKey || extension` and then truncate to the cipher's key length.
+
+That truncation is the trap: **the extension bytes are only reached when the
+auth hash is shorter than the key.** Pair `AES256C` with SHA-256 and the 32-byte
+hash fills the 32-byte key on its own — the extension is discarded, and the two
+schemes that are supposed to be incompatible derive *byte-identical keys*. A
+client that implemented neither scheme would pass such a test.
+
+| Hash | Bytes |   | Cipher | Key bytes |
+|---|---|---|---|---|
+| MD5 | 16 |   | AES | 16 |
+| SHA | 20 |   | AES192 / AES192C | 24 |
+| SHA224 | 28 |   | AES256 / AES256C | 32 |
+| SHA256 | 32 | | | |
+| SHA384 | 48 | | | |
+| SHA512 | 64 | | | |
+
+So pair the extended ciphers with **MD5 or SHA** to test the schemes at all.
+`examples/auth.json` does, and `TestExampleConfigExercisesBothKeyExtensions`
+fails if a future edit quietly undoes it. The long-hash pairings
+(`sha384aes192`, `sha512aes256`) are kept because real devices use them, but
+they prove nothing about which scheme a client implemented.
+
+> **This agent infers the security level; a client should not.** A client that
+> silently downgrades `authPriv` to `authNoPriv` has a security hole, whereas a
+> test agent that accepts whatever arrives is merely convenient. The divergence
+> is deliberate, and noted here so it is not mistaken for an inconsistency to be
+> fixed.
+
+> A single user may also be written with its fields at the top level, without a
+> `users` array. That is the original schema and still loads.
 
 > **About the engine ID.** The engine ID is this agent's stable unique
 > identity. The underlying library always prepends the fixed prefix
@@ -151,7 +250,7 @@ fault useless.
 ### Values — `values.json`
 
 A list of OIDs. Each has an array of values the agent can return; the active one
-is chosen at random on startup and changed from the UI.
+is chosen at random on startup and changed from the UI or by an SNMP SET.
 
 ```json
 {
@@ -160,6 +259,7 @@ is chosen at random on startup and changed from the UI.
       "name": "System Description",
       "oid": "1.3.6.1.2.1.1.1.0",
       "type": "string",
+      "readOnly": true,
       "values": ["Router model A", "Router model B", "Router model C"]
     },
     {
@@ -172,17 +272,44 @@ is chosen at random on startup and changed from the UI.
 }
 ```
 
+- `readOnly` *(optional)*: refuse SET on this OID with the `readOnly` error.
+  Without it the OID is writable. A client's SET error handling is otherwise
+  unreachable without a real device that happens to expose a non-writable
+  object.
+
 Supported `type` values: `string`, `integer`, `gauge`, `counter`, `timeticks`,
 `oid`.
 
 ## Try it
 
-With [net-snmp](http://www.net-snmp.org/) installed:
+With [net-snmp](http://www.net-snmp.org/) installed, against the shipped example
+configuration:
 
 ```sh
+# SNMPv3, authPriv
 snmpget -v3 -l authPriv -u testuser \
         -a SHA -A authpassword1 -x AES -X privpassword1 \
         127.0.0.1:1161 1.3.6.1.2.1.1.1.0
+
+# SNMPv3 at the top of the range, and with the Reeder key extension
+snmpget -v3 -l authPriv -u sha512aes256 \
+        -a SHA-512 -A authpassword1 -x AES-256 -X privpassword1 \
+        127.0.0.1:1161 1.3.6.1.2.1.1.1.0
+snmpget -v3 -l authPriv -u reeder256 \
+        -a SHA-256 -A authpassword1 -x AES-256-C -X privpassword1 \
+        127.0.0.1:1161 1.3.6.1.2.1.1.1.0
+
+# SNMPv2c
+snmpget  -v2c -c public 127.0.0.1:1161 1.3.6.1.2.1.1.1.0
+snmpwalk -v2c -c public 127.0.0.1:1161 1.3.6.1.2.1.1
+
+# SET, then read it back
+snmpset -v2c -c public 127.0.0.1:1161 1.3.6.1.2.1.1.4.0 s "noc@example.com"
+snmpget -v2c -c public 127.0.0.1:1161 1.3.6.1.2.1.1.4.0
+
+# a read-only OID refuses the write
+snmpset -v2c -c public 127.0.0.1:1161 1.3.6.1.2.1.1.1.0 s nope
+# Reason: (readOnly) ...
 ```
 
 Change the value in the web UI and run the command again — the returned value

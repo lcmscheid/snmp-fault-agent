@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"log"
 	"net"
@@ -23,8 +24,8 @@ func agentLogger() server.ILogger {
 // simulated. Real agents start at 1 after their first boot.
 const baseEngineBoots = 1
 
-// buildAgent constructs an SNMPv3-only master agent that serves the current
-// value of every OID in the store using the supplied credentials.
+// buildAgent constructs a master agent that serves the current value of every
+// OID in the store using the supplied credentials.
 //
 // The engine time is supplied through a hook rather than left to the library's
 // default, so the faults can shift it out of the RFC 3414 §2.2.3 time window
@@ -42,7 +43,7 @@ func buildAgent(auth *AuthConfig, store *Store, faults *Faults) (*server.MasterA
 		if encErr != nil {
 			return nil, encErr
 		}
-		oids = append(oids, &server.PDUValueControlItem{
+		item := &server.PDUValueControlItem{
 			OID:      oid,
 			Type:     oidType,
 			Document: e.Name,
@@ -53,14 +54,26 @@ func buildAgent(auth *AuthConfig, store *Store, faults *Faults) (*server.MasterA
 				}
 				return val, nil
 			},
-		})
+		}
+		// A nil OnSet is how the library marks an OID read-only: it answers with
+		// the readOnly error rather than calling us. That is the behaviour we
+		// want for a read-only entry, so leave the hook off entirely.
+		if !e.ReadOnly {
+			item.OnSet = func(value interface{}) error {
+				return store.SetFromSNMP(oid, value)
+			}
+		}
+		oids = append(oids, item)
 	}
 
 	started := time.Now()
 
 	sec := server.SecurityConfig{
-		SnmpV3Only:               true,
-		Users:                    []gosnmp.UsmSecurityParameters{auth.UsmUser()},
+		// v2c is served whenever a community is configured. The client library
+		// this agent exists to test reaches v2c well before v3, so refusing it
+		// would leave that whole stage without a fault-injecting target.
+		SnmpV3Only:               !auth.V2CEnabled(),
+		Users:                    auth.UsmUsers(),
 		AuthoritativeEngineID:    server.SNMPEngineID{EngineIDData: engineID},
 		AuthoritativeEngineBoots: baseEngineBoots,
 		OnGetAuthoritativeEngineTime: func() uint32 {
@@ -72,15 +85,27 @@ func buildAgent(auth *AuthConfig, store *Store, faults *Faults) (*server.MasterA
 		},
 	}
 
+	// One routing table serves both versions: the library keys it on the context
+	// name for v3 and on the community for v1/v2c. Standard v3 clients send an
+	// empty context, so "" and the community both point at this sub-agent.
+	routes := []string{""}
+	if auth.V2CEnabled() {
+		routes = append(routes, auth.Community)
+	}
+
 	master := &server.MasterAgent{
 		Logger:         agentLogger(),
 		SecurityConfig: sec,
 		SubAgents: []*server.SubAgent{
 			{
-				// SNMPv3 routes by context name; standard clients send an empty
-				// context, so register this sub-agent under the empty context.
-				CommunityIDs: []string{""},
+				CommunityIDs: routes,
 				OIDs:         oids,
+				// Without this the library swallows a handler error: it leaves
+				// the PDU marked NoError and writes the message into the varbind
+				// as an octet string, so a rejected SET looks to the client like
+				// a successful one that returned odd text. Marking the packet
+				// turns it into the genErr a client can actually branch on.
+				UserErrorMarkPacket: true,
 			},
 		},
 	}
@@ -101,15 +126,6 @@ const maxDatagram = 65535
 // is not documented as safe for concurrent use. Only the delayed send is moved
 // to a goroutine, so a delay fault does not stall every other request.
 func serveSNMP(endpoint string, master *server.MasterAgent, faults *Faults, auth *AuthConfig) error {
-	// NewSNMPServer would normally do this for us. Since we drive the socket
-	// ourselves we must call it explicitly: it builds the community-to-subagent
-	// routing map and back-links each subagent to the master. Without it every
-	// request is answered with an error the client reports as an invalid
-	// message.
-	if err := master.ReadyForWork(); err != nil {
-		return err
-	}
-
 	addr, err := net.ResolveUDPAddr("udp", endpoint)
 	if err != nil {
 		return err
@@ -120,7 +136,24 @@ func serveSNMP(endpoint string, master *server.MasterAgent, faults *Faults, auth
 	}
 	defer conn.Close()
 
-	log.Printf("SNMP agent listening on udp %s", endpoint)
+	log.Printf("SNMP agent listening on udp %s", conn.LocalAddr())
+	return serveConn(conn, master, faults, auth)
+}
+
+// serveConn is serveSNMP over a socket the caller owns, so the caller can close
+// it to stop the loop. Binding is separated from serving because a caller that
+// needs a free port — a test, for instance — has to bind before it knows which
+// port it got, and asking the kernel for one, releasing it, and hoping to bind
+// it again is a race.
+func serveConn(conn *net.UDPConn, master *server.MasterAgent, faults *Faults, auth *AuthConfig) error {
+	// NewSNMPServer would normally do this for us. Since we drive the socket
+	// ourselves we must call it explicitly: it builds the community-to-subagent
+	// routing map and back-links each subagent to the master. Without it every
+	// request is answered with an error the client reports as an invalid
+	// message.
+	if err := master.ReadyForWork(); err != nil {
+		return err
+	}
 
 	buf := make([]byte, maxDatagram)
 	for {
@@ -227,29 +260,76 @@ func applySemanticFaults(response, request []byte, active FaultSet, auth *AuthCo
 	return respPkt.MarshalMsg()
 }
 
-// decodePacket parses an SNMP message using the agent's own credentials, which
-// is what lets us decrypt and re-encrypt our own v3 traffic.
+// decodePacket parses an SNMP message, using the agent's own credentials when
+// the message is v3 — which is what lets us decrypt and re-encrypt our own
+// traffic in order to fault it.
 //
-// Two things are easy to get wrong here. The engine ID must be present, because
-// USM keys are localized to it (RFC 3414 §2.6) — without it key derivation
-// produces a zero-length key. And decoding decrypts in place, so the caller's
-// buffer is copied first: otherwise a failed decode would leave us sending a
+// v1/v2c carries no security parameters, so the first pass is the answer. v3
+// needs a second pass with the right user's keys, and which user that is only
+// becomes known once the message has been parsed far enough to read the
+// cleartext msgUserName from the header. That two-pass shape is the same one
+// GoSNMPServer itself uses to dispatch an incoming request.
+//
+// Two things are easy to get wrong. The engine ID must be present, because USM
+// keys are localized to it (RFC 3414 §2.6) — without it key derivation produces
+// a zero-length key. And decoding decrypts in place, so every pass gets its own
+// copy of the buffer: otherwise a failed decode would leave us sending a
 // half-decrypted response that the client rejects as inauthentic.
 func decodePacket(msg []byte, auth *AuthConfig) (*gosnmp.SnmpPacket, error) {
-	usm, err := auth.UsmUserWithEngine()
+	probe := gosnmp.GoSNMP{SecurityParameters: &gosnmp.UsmSecurityParameters{}}
+	pkt, err := probe.SnmpDecodePacket(scratchCopy(msg))
+	if pkt == nil {
+		if err == nil {
+			err = errors.New("message did not decode to a packet")
+		}
+		return nil, err
+	}
+	if pkt.Version != gosnmp.Version3 {
+		// v1/v2c carries no security parameters, so this pass was the real
+		// decode and its error is final.
+		if err != nil {
+			return nil, err
+		}
+		return pkt, nil
+	}
+	// For v3 the probe was always going to fail to authenticate or decrypt —
+	// it had no keys. Its error is expected and says nothing, so it is dropped
+	// in favour of the second pass below.
+
+	// The first pass could not authenticate or decrypt, but it did read the
+	// header far enough to say who sent it.
+	username := usernameOf(pkt)
+	if username == "" {
+		return nil, errors.New("v3 message carries no user name")
+	}
+	usm, err := auth.UsmUserWithEngine(username)
 	if err != nil {
 		return nil, err
 	}
 	// Derive the localized auth and privacy keys; they are not computed on
 	// construction and decryption fails with a zero-size key without this.
 	if err := usm.InitSecurityKeys(); err != nil {
-		return nil, fmt.Errorf("initialising security keys: %w", err)
+		return nil, fmt.Errorf("initialising security keys for %q: %w", username, err)
 	}
 
-	scratch := make([]byte, len(msg))
-	copy(scratch, msg)
+	handle := gosnmp.GoSNMP{SecurityParameters: usm}
+	return handle.SnmpDecodePacket(scratchCopy(msg))
+}
 
-	handle := gosnmp.GoSNMP{}
-	handle.SecurityParameters = usm
-	return handle.SnmpDecodePacket(scratch)
+// usernameOf reads the USM user name from a decoded v3 packet, returning "" if
+// the message carried no USM parameters.
+func usernameOf(pkt *gosnmp.SnmpPacket) string {
+	usm, ok := pkt.SecurityParameters.(*gosnmp.UsmSecurityParameters)
+	if !ok || usm == nil {
+		return ""
+	}
+	return usm.UserName
+}
+
+// scratchCopy returns a private copy of a message, because decoding decrypts in
+// place and would otherwise corrupt the caller's buffer.
+func scratchCopy(msg []byte) []byte {
+	out := make([]byte, len(msg))
+	copy(out, msg)
+	return out
 }

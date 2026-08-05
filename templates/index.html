@@ -32,25 +32,46 @@
     .fault-summary { font-weight: 600; }
     .fault-summary.on { color: #d98a4a; }
     .hint { color: #888; font-size: 0.85rem; margin: 0.2rem 0 0; }
+    .ro { font-size: 0.75rem; color: #888; border: 1px solid #8886; border-radius: 4px; padding: 0 0.3rem; }
   </style>
 </head>
 <body>
   <h1>SNMP Test Agent</h1>
-  <p class="sub">SNMPv3 agent listening on <code>{{.Endpoint}}</code></p>
+  <p class="sub">
+    Listening on <code>{{.Endpoint}}</code> —
+    SNMPv3{{if .Auth.V2CEnabled}} and SNMPv2c{{end}}
+  </p>
 
-  <h2>Credentials</h2>
+  <h2>Identity</h2>
   <div class="card">
     <dl>
-      <dt>Username</dt><dd>{{.Auth.Username}}</dd>
-      <dt>Security level</dt><dd>{{.Auth.SecurityLevel}}</dd>
-      <dt>Auth protocol</dt><dd>{{if .Auth.AuthProtocol}}{{.Auth.AuthProtocol}}{{else}}none{{end}}</dd>
-      <dt>Auth passphrase</dt><dd><code>{{.Auth.AuthPassphrase}}</code></dd>
-      <dt>Priv protocol</dt><dd>{{if .Auth.PrivProtocol}}{{.Auth.PrivProtocol}}{{else}}none{{end}}</dd>
-      <dt>Priv passphrase</dt><dd><code>{{.Auth.PrivPassphrase}}</code></dd>
       <dt>Identity (engine ID)</dt><dd>{{.Auth.EngineIDLabel}}</dd>
       <dt>Engine ID (wire)</dt><dd><code>{{.Auth.WireEngineID}}</code></dd>
+      <dt>v2c community</dt>
+      <dd>{{if .Auth.V2CEnabled}}<code>{{.Auth.Community}}</code>{{else}}<em>v2c disabled</em>{{end}}</dd>
     </dl>
   </div>
+
+  <h2>Users</h2>
+  <p class="sub">
+    Every user is served by this one agent, so a client's auth &times; priv matrix can be
+    driven against a single instance.
+  </p>
+  <table>
+    <thead>
+      <tr><th>Username</th><th>Security level</th><th>Auth</th><th>Priv</th></tr>
+    </thead>
+    <tbody>
+      {{range .Auth.Users}}
+      <tr>
+        <td><code>{{.Username}}</code></td>
+        <td>{{.SecurityLevel}}</td>
+        <td>{{if .AuthProtocol}}{{.AuthProtocol}} / <code>{{.AuthPassphrase}}</code>{{else}}none{{end}}</td>
+        <td>{{if .PrivProtocol}}{{.PrivProtocol}} / <code>{{.PrivPassphrase}}</code>{{else}}none{{end}}</td>
+      </tr>
+      {{end}}
+    </tbody>
+  </table>
 
   <h2>Faults</h2>
   <p class="sub">
@@ -124,7 +145,10 @@
   </div>
 
   <h2>Values</h2>
-  <p class="sub">The highlighted value is what the agent returns on an SNMP GET. Click to change it.</p>
+  <p class="sub">
+    The highlighted value is what the agent returns on an SNMP GET. Click to change it. A successful
+    SET arrives here too: an unseen value is appended as a new option and selected.
+  </p>
   <table>
     <thead>
       <tr><th>Name</th><th>OID</th><th>Type</th><th>Current</th><th>Set value</th></tr>
