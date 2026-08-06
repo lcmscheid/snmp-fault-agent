@@ -84,6 +84,40 @@ var snmpVersions = []struct {
 	{"v3", v3Flags},
 }
 
+// forEachVersion runs body once per version in the table, naming the subtest
+// after the version. It fails if fewer versions actually ran than the table
+// declares: without that floor a table could report success having run only
+// v2c, which is the one version that proves nothing about the digest.
+func forEachVersion(t *testing.T, body func(t *testing.T, flags func(timeout string) []string)) {
+	t.Helper()
+	var ran int
+	for _, v := range snmpVersions {
+		t.Run(v.name, func(t *testing.T) {
+			ran++
+			body(t, v.flags)
+		})
+	}
+	if ran < len(snmpVersions) {
+		t.Fatalf("only %d of %d versions ran", ran, len(snmpVersions))
+	}
+}
+
+// cleanWalk walks a root before any fault is set and returns its varbinds, so
+// that a later comparison is against what this version really returns and a
+// failure distinguishes a fired fault from a broken harness.
+func cleanWalk(t *testing.T, flags []string, endpoint, root string) []string {
+	t.Helper()
+	out, err := runSNMP(t, "snmpwalk", append(flags, endpoint, root)...)
+	if err != nil {
+		t.Fatalf("clean walk failed: %v\n%s", err, out)
+	}
+	clean := varbinds(out)
+	if len(clean) < 2 {
+		t.Fatalf("expected the clean walk to return several varbinds, got %d:\n%s", len(clean), out)
+	}
+	return clean
+}
+
 // valueLine matches a varbind carrying a value: an OID, then a type token, then
 // the value. Requiring the type is what separates a real varbind both from the
 // diagnostics a fault provokes and from the endOfMibView marker that ends a
@@ -166,115 +200,96 @@ func TestNetSNMPFaultsBreakGet(t *testing.T) {
 		{"dropRate", "1.0"},
 	} {
 		t.Run(tc.fault, func(t *testing.T) {
-			var ran int
-			for _, v := range snmpVersions {
-				t.Run(v.name, func(t *testing.T) {
-					ran++
-					endpoint, faults := startTestAgent(t)
+			forEachVersion(t, func(t *testing.T, flags func(string) []string) {
+				endpoint, faults := startTestAgent(t)
 
-					if out, err := runSNMP(t, "snmpget", append(v.flags("1"), endpoint, sysDescr)...); err != nil {
-						t.Fatalf("GET failed before the fault was set: %v\n%s", err, out)
-					}
+				if out, err := runSNMP(t, "snmpget", append(flags("1"), endpoint, sysDescr)...); err != nil {
+					t.Fatalf("GET failed before the fault was set: %v\n%s", err, out)
+				}
 
-					setFault(t, faults, tc.fault, tc.value)
+				setFault(t, faults, tc.fault, tc.value)
 
-					out, err := runSNMP(t, "snmpget", append(v.flags("1"), endpoint, sysDescr)...)
-					if err == nil {
-						t.Fatalf("snmpget succeeded with %s=%s set; expected it to fail\n%s", tc.fault, tc.value, out)
-					}
-				})
-			}
-
-			// Without this the table could report success having run only v2c,
-			// which is the one version that proves nothing about the digest.
-			if ran < len(snmpVersions) {
-				t.Fatalf("only %d of %d versions ran", ran, len(snmpVersions))
-			}
+				out, err := runSNMP(t, "snmpget", append(flags("1"), endpoint, sysDescr)...)
+				if err == nil {
+					t.Fatalf("snmpget succeeded with %s=%s set; expected it to fail\n%s", tc.fault, tc.value, out)
+				}
+			})
 		})
 	}
 }
 
 // TestNetSNMPNonIncreasingOIDStopsWalk is the fault this project exists for: a
-// client without the guard walks forever. The assertion is that the walk
-// returns fewer varbinds than a clean one, which holds however net-snmp words
-// its complaint. At v3 it also shows the echoed OID reaches net-snmp inside a
-// message net-snmp was willing to verify.
+// client without the guard walks forever. The assertion is that the walk stops
+// early but returns something, which holds however net-snmp words its
+// complaint. Requiring a varbind is what makes the v3 run mean anything: a walk
+// that returned nothing would also be "fewer", so without it a re-marshalling
+// bug that left every response inauthentic would pass here quietly.
 func TestNetSNMPNonIncreasingOIDStopsWalk(t *testing.T) {
-	for _, v := range snmpVersions {
-		t.Run(v.name, func(t *testing.T) {
-			endpoint, faults := startTestAgent(t)
+	forEachVersion(t, func(t *testing.T, flags func(string) []string) {
+		endpoint, faults := startTestAgent(t)
+		clean := cleanWalk(t, flags("1"), endpoint, sysObjects)
 
-			out, err := runSNMP(t, "snmpwalk", append(v.flags("1"), endpoint, sysObjects)...)
-			if err != nil {
-				t.Fatalf("clean walk failed: %v\n%s", err, out)
-			}
-			clean := varbinds(out)
-			if len(clean) < 2 {
-				t.Fatalf("expected the clean walk to return several varbinds, got %d:\n%s", len(clean), out)
-			}
+		setFault(t, faults, "nonIncreasingOID", "on")
 
-			setFault(t, faults, "nonIncreasingOID", "on")
-
-			out, _ = runSNMP(t, "snmpwalk", append(v.flags("1"), endpoint, sysObjects)...)
-			if got := varbinds(out); len(got) >= len(clean) {
-				t.Fatalf("walk returned %d varbinds with the fault set and %d without; expected it to stop early\n%s",
-					len(got), len(clean), out)
-			}
-		})
-	}
+		out, _ := runSNMP(t, "snmpwalk", append(flags("1"), endpoint, sysObjects)...)
+		got := varbinds(out)
+		if len(got) == 0 {
+			t.Fatalf("the walk returned nothing, so no faulted response was accepted at all\n%s", out)
+		}
+		if len(got) >= len(clean) {
+			t.Fatalf("walk returned %d varbinds with the fault set and %d without; expected it to stop early\n%s",
+				len(got), len(clean), out)
+		}
+	})
 }
 
 // TestNetSNMPToleratesDuplicateResponses is the one fault whose correct outcome
 // is nothing at all: a client must discard the second copy rather than
 // mis-attribute it to a later request, so an unchanged walk is the pass. At v3
-// the second copy has to authenticate as well, and still be discarded.
+// the second copy authenticates as well, and still has to be discarded.
 func TestNetSNMPToleratesDuplicateResponses(t *testing.T) {
-	for _, v := range snmpVersions {
-		t.Run(v.name, func(t *testing.T) {
-			endpoint, faults := startTestAgent(t)
+	forEachVersion(t, func(t *testing.T, flags func(string) []string) {
+		endpoint, faults := startTestAgent(t)
+		clean := cleanWalk(t, flags("1"), endpoint, sysObjects)
 
-			out, err := runSNMP(t, "snmpwalk", append(v.flags("1"), endpoint, sysObjects)...)
-			if err != nil {
-				t.Fatalf("clean walk failed: %v\n%s", err, out)
-			}
-			clean := varbinds(out)
-			if len(clean) < 2 {
-				t.Fatalf("expected the clean walk to return several varbinds, got %d:\n%s", len(clean), out)
-			}
+		setFault(t, faults, "duplicate", "on")
 
-			setFault(t, faults, "duplicate", "on")
-
-			out, err = runSNMP(t, "snmpwalk", append(v.flags("1"), endpoint, sysObjects)...)
-			if err != nil {
-				t.Fatalf("walk failed with duplicate responses: %v\n%s", err, out)
-			}
-			if got := varbinds(out); strings.Join(got, "\n") != strings.Join(clean, "\n") {
-				t.Fatalf("duplicate responses changed the walk:\nwant:\n%s\ngot:\n%s",
-					strings.Join(clean, "\n"), strings.Join(got, "\n"))
-			}
-		})
-	}
+		out, err := runSNMP(t, "snmpwalk", append(flags("1"), endpoint, sysObjects)...)
+		if err != nil {
+			t.Fatalf("walk failed with duplicate responses: %v\n%s", err, out)
+		}
+		if got := varbinds(out); strings.Join(got, "\n") != strings.Join(clean, "\n") {
+			t.Fatalf("duplicate responses changed the walk:\nwant:\n%s\ngot:\n%s",
+				strings.Join(clean, "\n"), strings.Join(got, "\n"))
+		}
+	})
 }
 
 // TestNetSNMPDelayTripsClientTimeout pins the delay either side of a real
 // client's timeout, so the fault is shown to be the cause rather than a slow
 // machine: the same GET fails under a short timeout and succeeds under a long
-// one, with nothing else changed. The long timeout has to cover v3 discovery as
-// well, which the delay slows down too.
+// one, with nothing else changed.
+//
+// The long timeout is generous because at v3 the delay slows the discovery
+// exchange too, so the successful run pays it twice — a margin that is about
+// the fault being slow, not about the machine being slow.
 func TestNetSNMPDelayTripsClientTimeout(t *testing.T) {
-	for _, v := range snmpVersions {
-		t.Run(v.name, func(t *testing.T) {
-			endpoint, faults := startTestAgent(t)
-			setFault(t, faults, "delayMS", "3000")
+	forEachVersion(t, func(t *testing.T, flags func(string) []string) {
+		endpoint, faults := startTestAgent(t)
 
-			if out, err := runSNMP(t, "snmpget", append(v.flags("1"), endpoint, sysDescr)...); err == nil {
-				t.Fatalf("snmpget succeeded under a 3s delay with a 1s timeout\n%s", out)
-			}
-			if out, err := runSNMP(t, "snmpget", append(v.flags("8"), endpoint, sysDescr)...); err != nil {
-				t.Fatalf("snmpget failed under a 3s delay with an 8s timeout: %v\n%s", err, out)
-			}
-		})
-	}
+		if out, err := runSNMP(t, "snmpget", append(flags("1"), endpoint, sysDescr)...); err != nil {
+			t.Fatalf("GET failed before the fault was set: %v\n%s", err, out)
+		}
+
+		setFault(t, faults, "delayMS", "3000")
+
+		if out, err := runSNMP(t, "snmpget", append(flags("1"), endpoint, sysDescr)...); err == nil {
+			t.Fatalf("snmpget succeeded under a 3s delay with a 1s timeout\n%s", out)
+		}
+		if out, err := runSNMP(t, "snmpget", append(flags("15"), endpoint, sysDescr)...); err != nil {
+			t.Fatalf("snmpget failed under a 3s delay with a 15s timeout: %v\n%s", err, out)
+		}
+	})
 }
 
 // mib2 is a walk root wide enough to reach every type the example config
@@ -364,16 +379,9 @@ func TestNetSNMPUserMatrix(t *testing.T) {
 func TestNetSNMPBulkWalk(t *testing.T) {
 	endpoint, _ := startTestAgent(t)
 
-	out, err := runSNMP(t, "snmpwalk", append(v2cFlags("1"), endpoint, mib2)...)
-	if err != nil {
-		t.Fatalf("walk failed: %v\n%s", err, out)
-	}
-	want := varbinds(out)
-	if len(want) < 2 {
-		t.Fatalf("expected the walk to return several varbinds, got %d:\n%s", len(want), out)
-	}
+	want := cleanWalk(t, v2cFlags("1"), endpoint, mib2)
 
-	out, err = runSNMP(t, "snmpbulkwalk", append(v2cFlags("1"), endpoint, mib2)...)
+	out, err := runSNMP(t, "snmpbulkwalk", append(v2cFlags("1"), endpoint, mib2)...)
 	if err != nil {
 		t.Fatalf("bulk walk failed: %v\n%s", err, out)
 	}
