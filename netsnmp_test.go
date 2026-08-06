@@ -197,68 +197,83 @@ func TestNetSNMPFaultsBreakGet(t *testing.T) {
 // TestNetSNMPNonIncreasingOIDStopsWalk is the fault this project exists for: a
 // client without the guard walks forever. The assertion is that the walk
 // returns fewer varbinds than a clean one, which holds however net-snmp words
-// its complaint.
+// its complaint. At v3 it also shows the echoed OID reaches net-snmp inside a
+// message net-snmp was willing to verify.
 func TestNetSNMPNonIncreasingOIDStopsWalk(t *testing.T) {
-	endpoint, faults := startTestAgent(t)
+	for _, v := range snmpVersions {
+		t.Run(v.name, func(t *testing.T) {
+			endpoint, faults := startTestAgent(t)
 
-	out, err := runSNMP(t, "snmpwalk", append(v2cFlags("1"), endpoint, sysObjects)...)
-	if err != nil {
-		t.Fatalf("clean walk failed: %v\n%s", err, out)
-	}
-	clean := varbinds(out)
-	if len(clean) < 2 {
-		t.Fatalf("expected the clean walk to return several varbinds, got %d:\n%s", len(clean), out)
-	}
+			out, err := runSNMP(t, "snmpwalk", append(v.flags("1"), endpoint, sysObjects)...)
+			if err != nil {
+				t.Fatalf("clean walk failed: %v\n%s", err, out)
+			}
+			clean := varbinds(out)
+			if len(clean) < 2 {
+				t.Fatalf("expected the clean walk to return several varbinds, got %d:\n%s", len(clean), out)
+			}
 
-	setFault(t, faults, "nonIncreasingOID", "on")
+			setFault(t, faults, "nonIncreasingOID", "on")
 
-	out, _ = runSNMP(t, "snmpwalk", append(v2cFlags("1"), endpoint, sysObjects)...)
-	if got := varbinds(out); len(got) >= len(clean) {
-		t.Fatalf("walk returned %d varbinds with the fault set and %d without; expected it to stop early\n%s",
-			len(got), len(clean), out)
+			out, _ = runSNMP(t, "snmpwalk", append(v.flags("1"), endpoint, sysObjects)...)
+			if got := varbinds(out); len(got) >= len(clean) {
+				t.Fatalf("walk returned %d varbinds with the fault set and %d without; expected it to stop early\n%s",
+					len(got), len(clean), out)
+			}
+		})
 	}
 }
 
 // TestNetSNMPToleratesDuplicateResponses is the one fault whose correct outcome
 // is nothing at all: a client must discard the second copy rather than
-// mis-attribute it to a later request, so an unchanged walk is the pass.
+// mis-attribute it to a later request, so an unchanged walk is the pass. At v3
+// the second copy has to authenticate as well, and still be discarded.
 func TestNetSNMPToleratesDuplicateResponses(t *testing.T) {
-	endpoint, faults := startTestAgent(t)
+	for _, v := range snmpVersions {
+		t.Run(v.name, func(t *testing.T) {
+			endpoint, faults := startTestAgent(t)
 
-	out, err := runSNMP(t, "snmpwalk", append(v2cFlags("1"), endpoint, sysObjects)...)
-	if err != nil {
-		t.Fatalf("clean walk failed: %v\n%s", err, out)
-	}
-	clean := varbinds(out)
-	if len(clean) < 2 {
-		t.Fatalf("expected the clean walk to return several varbinds, got %d:\n%s", len(clean), out)
-	}
+			out, err := runSNMP(t, "snmpwalk", append(v.flags("1"), endpoint, sysObjects)...)
+			if err != nil {
+				t.Fatalf("clean walk failed: %v\n%s", err, out)
+			}
+			clean := varbinds(out)
+			if len(clean) < 2 {
+				t.Fatalf("expected the clean walk to return several varbinds, got %d:\n%s", len(clean), out)
+			}
 
-	setFault(t, faults, "duplicate", "on")
+			setFault(t, faults, "duplicate", "on")
 
-	out, err = runSNMP(t, "snmpwalk", append(v2cFlags("1"), endpoint, sysObjects)...)
-	if err != nil {
-		t.Fatalf("walk failed with duplicate responses: %v\n%s", err, out)
-	}
-	if got := varbinds(out); strings.Join(got, "\n") != strings.Join(clean, "\n") {
-		t.Fatalf("duplicate responses changed the walk:\nwant:\n%s\ngot:\n%s",
-			strings.Join(clean, "\n"), strings.Join(got, "\n"))
+			out, err = runSNMP(t, "snmpwalk", append(v.flags("1"), endpoint, sysObjects)...)
+			if err != nil {
+				t.Fatalf("walk failed with duplicate responses: %v\n%s", err, out)
+			}
+			if got := varbinds(out); strings.Join(got, "\n") != strings.Join(clean, "\n") {
+				t.Fatalf("duplicate responses changed the walk:\nwant:\n%s\ngot:\n%s",
+					strings.Join(clean, "\n"), strings.Join(got, "\n"))
+			}
+		})
 	}
 }
 
 // TestNetSNMPDelayTripsClientTimeout pins the delay either side of a real
 // client's timeout, so the fault is shown to be the cause rather than a slow
 // machine: the same GET fails under a short timeout and succeeds under a long
-// one, with nothing else changed.
+// one, with nothing else changed. The long timeout has to cover v3 discovery as
+// well, which the delay slows down too.
 func TestNetSNMPDelayTripsClientTimeout(t *testing.T) {
-	endpoint, faults := startTestAgent(t)
-	setFault(t, faults, "delayMS", "3000")
+	for _, v := range snmpVersions {
+		t.Run(v.name, func(t *testing.T) {
+			endpoint, faults := startTestAgent(t)
+			setFault(t, faults, "delayMS", "3000")
 
-	if out, err := runSNMP(t, "snmpget", append(v2cFlags("1"), endpoint, sysDescr)...); err == nil {
-		t.Fatalf("snmpget succeeded under a 3s delay with a 1s timeout\n%s", out)
-	}
-	if out, err := runSNMP(t, "snmpget", append(v2cFlags("8"), endpoint, sysDescr)...); err != nil {
-		t.Fatalf("snmpget failed under a 3s delay with an 8s timeout: %v\n%s", err, out)
+			if out, err := runSNMP(t, "snmpget", append(v.flags("1"), endpoint, sysDescr)...); err == nil {
+				t.Fatalf("snmpget succeeded under a 3s delay with a 1s timeout\n%s", out)
+			}
+			if out, err := runSNMP(t, "snmpget", append(v.flags("8"), endpoint, sysDescr)...); err != nil {
+				t.Fatalf("snmpget failed under a 3s delay with an 8s timeout: %v\n%s", err, out)
+			}
+		})
 	}
 }
 
