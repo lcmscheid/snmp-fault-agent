@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"os"
 	"os/exec"
 	"regexp"
@@ -49,6 +50,18 @@ func runSNMP(t *testing.T, tool string, args ...string) (string, error) {
 	return string(out), err
 }
 
+// exitCode reports the status a net-snmp tool exited with. A failure that was
+// not an exit status at all — the tool never ran — is a broken harness rather
+// than a fault, so it fails the test outright.
+func exitCode(t *testing.T, err error) int {
+	t.Helper()
+	var exit *exec.ExitError
+	if !errors.As(err, &exit) {
+		t.Fatalf("net-snmp did not run: %v", err)
+	}
+	return exit.ExitCode()
+}
+
 // v2cFlags returns the credentials and timing for a v2c invocation. Retries are
 // off: against a fault that drops or delays, each retry costs another full
 // timeout and proves nothing the first attempt did not.
@@ -93,11 +106,21 @@ func forEachVersion(t *testing.T, body func(t *testing.T, flags func(timeout str
 	var ran int
 	for _, v := range snmpVersions {
 		t.Run(v.name, func(t *testing.T) {
-			ran++
+			// Deferred so that it still counts a version that ran and failed,
+			// which reaches here through Goexit. A skipped version is not a run
+			// — counting it is what made this floor unable to fire at all.
+			defer func() {
+				if !t.Skipped() {
+					ran++
+				}
+			}()
 			body(t, v.flags)
 		})
 	}
-	if ran < len(snmpVersions) {
+	// Nothing ran at all is the documented no-net-snmp case, which skips rather
+	// than fails; CI turns that into a failure through requireNetSNMP instead.
+	// Some but not all is the case this floor exists for.
+	if ran > 0 && ran < len(snmpVersions) {
 		t.Fatalf("only %d of %d versions ran", ran, len(snmpVersions))
 	}
 }
@@ -184,20 +207,37 @@ func TestNetSNMPSetRoundTrip(t *testing.T) {
 	}
 }
 
+// errStatusExit is snmpget's exit status when it decoded a response carrying an
+// SNMP error-status. Anything it could not use — discarded, undecodable, never
+// delivered — exits 1 instead, so the two are told apart without reading a word
+// of net-snmp's diagnostics (ADR-0001).
+const errStatusExit = 2
+
 // TestNetSNMPFaultsBreakGet covers the faults whose visible effect is that a
 // single GET stops working — by error-status PDU, by a message net-snmp cannot
 // decode, or by nothing arriving at all. Each fault runs against every version
 // in snmpVersions, and each run performs a clean GET first, so a failure here
 // means the fault fired rather than the harness being broken.
+//
+// The two semantic faults here carry wantErrStatus, and it is the assertion that
+// makes their v3 run worth its runtime: a plain "the command failed" is equally
+// satisfied by net-snmp discarding the response as inauthentic, so re-marshalling
+// could break the digest and this test would keep passing. Requiring net-snmp to
+// have decoded an error-status says it authenticated, decrypted and read the PDU.
+// The third semantic fault, non-increasing OID, is proven the same way by the
+// walk test's requirement that the short walk still return a varbind.
 func TestNetSNMPFaultsBreakGet(t *testing.T) {
-	for _, tc := range []struct{ fault, value string }{
-		{"tooBig", "on"},
-		{"genErr", "on"},
-		{"truncateBytes", "10"},
-		{"corruptByte", "on"},
+	for _, tc := range []struct {
+		fault, value  string
+		wantErrStatus bool
+	}{
+		{fault: "tooBig", value: "on", wantErrStatus: true},
+		{fault: "genErr", value: "on", wantErrStatus: true},
+		{fault: "truncateBytes", value: "10"},
+		{fault: "corruptByte", value: "on"},
 		// 1.0 rather than an interesting-looking fraction: a statistical
 		// setting here would only buy a flaky test.
-		{"dropRate", "1.0"},
+		{fault: "dropRate", value: "1.0"},
 	} {
 		t.Run(tc.fault, func(t *testing.T) {
 			forEachVersion(t, func(t *testing.T, flags func(string) []string) {
@@ -212,6 +252,14 @@ func TestNetSNMPFaultsBreakGet(t *testing.T) {
 				out, err := runSNMP(t, "snmpget", append(flags("1"), endpoint, sysDescr)...)
 				if err == nil {
 					t.Fatalf("snmpget succeeded with %s=%s set; expected it to fail\n%s", tc.fault, tc.value, out)
+				}
+				// Read for every fault, not only the asserted ones: it is what
+				// separates a tool that ran and failed from one that never ran.
+				code := exitCode(t, err)
+				if tc.wantErrStatus && code != errStatusExit {
+					t.Fatalf("snmpget exited %d with %s=%s set, want %d — net-snmp never decoded an "+
+						"error-status, so the faulted response did not reach it intact\n%s",
+						code, tc.fault, tc.value, errStatusExit, out)
 				}
 			})
 		})
