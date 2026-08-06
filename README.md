@@ -209,10 +209,14 @@ published.
   client's 3DES path needs real hardware.
 - `community` *(optional)*: the SNMPv2c community. Defaults to `public`. Set it
   to `""` to serve **v3 only**.
-- `engineID` *(optional)*: a human-readable **identity label** for this
-  simulated instance (e.g. `printer-lab-3`). Defaults to `snmpfault` so the
-  engine ID is stable and never depends on the host. Prefix with `0x` to supply
-  raw hex instead (e.g. `0x01020304`).
+- `engineID` *(optional)*: this agent's SNMPv3 **engine ID**, written as a
+  readable label so it can name a simulated instance (e.g. `printer-lab-3`).
+  Prefix with `0x` to supply raw hex instead (e.g. `0x01020304`). Defaults to
+  `snmpfault` so the engine ID is stable and never depends on the host.
+  **It is an input to key derivation, not just a name**: USM localizes every
+  user's keys against it, so changing it changes every key. A client configured
+  for the old one fails to authenticate, which looks exactly like a wrong
+  passphrase.
 - The security level (`noAuthNoPriv` / `authNoPriv` / `authPriv`) is inferred
   from which protocols are set. An unknown protocol name is an **error**, not a
   silent fall back to `none` — a typo that quietly downgrades a user makes every

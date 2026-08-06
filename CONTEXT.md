@@ -22,14 +22,21 @@ non-increasing OID, genErr. The message is well-formed and wrong.
 **Timeliness report**:
 The `usmStatsNotInTimeWindows` Report PDU an authoritative engine returns when a
 request's claimed engine boots or time are outside the RFC 3414 §2.2.3 window.
-It is the only answer an engine fault provokes, and the only thing a client can
-resynchronise from. Implemented here because the underlying library has no
+It is what the boots and clock faults provoke, and the only thing a client can
+resynchronise from. An engine ID that changed is a different question, answered
+by a different report. Implemented here because the underlying library has no
 timeliness check at all.
 _Avoid_: error, rejection
 
+**Engine ID**:
+The octets identifying this agent as an authoritative SNMPv3 engine. Not only a
+name: USM derives every user's localized keys from it, so two agents that share
+a passphrase but not an engine ID share no usable key.
+_Avoid_: identity label, agent name
+
 **Engine fault**:
-A fault applied to the agent's reported SNMPv3 engine state, such as its boot
-counter or clock.
+A fault applied to the agent's reported SNMPv3 engine state — its boot counter,
+its clock, or its engine ID.
 
 ## Language — testing
 

@@ -64,8 +64,10 @@ func timelinessReport(request []byte, master *server.MasterAgent, auth *AuthConf
 		return nil, nil
 	}
 	// A message naming a different engine is not out of window, it is out of
-	// scope: RFC 3414 §3.2 (4) answers that with usmStatsUnknownEngineIDs, which
-	// is the discovery exchange the library already serves.
+	// scope: RFC 3414 §3.2 (4) answers that with usmStatsUnknownEngineIDs, a
+	// report this agent does not send. Neither does the library — a client
+	// presenting a stale engine ID gets nothing back and is stuck, which is the
+	// gap #7 exists to close. Declined here rather than answered wrongly.
 	ours, err := auth.UsmUserWithEngine(usm.UserName)
 	if err != nil {
 		return nil, nil
