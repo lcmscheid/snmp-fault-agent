@@ -40,9 +40,22 @@ jobs:
             exit 1
           fi
 
+      # The foreign-client tests drive the agent with net-snmp, which is the only
+      # way to show that a fault provokes a reaction in a client we did not
+      # write. Deliberately unpinned: the assertions are on exit status and on
+      # output compared against a clean run, not on net-snmp's wording.
+      - name: Install net-snmp
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq snmp
+
       # -race matters here specifically: the agent serves SNMP on one goroutine
       # while the web UI mutates the same fault and value state from another.
+      #
+      # SNMPFAULT_REQUIRE_NETSNMP turns the foreign-client tests' skip into a
+      # failure, so an install that silently broke cannot leave the suite green
+      # having tested none of the faults.
       - name: go test
+        env:
+          SNMPFAULT_REQUIRE_NETSNMP: "1"
         run: go test -race ./...
 
   image:
@@ -70,9 +83,12 @@ jobs:
           cache-to: type=gha,mode=max
 
       # Publishing an image that starts but does not answer would be worse than
-      # publishing none, so the image is exercised before it is pushed: an
-      # SNMPv3 GET, an SNMPv2c GET, and a fault driven over the HTTP surface CI
-      # consumers use.
+      # publishing none, so the image is exercised before it is pushed. Only
+      # what is specific to the image is checked here — that it starts, finds
+      # its baked-in configuration, and answers an authenticated request. The
+      # faults are covered by the foreign-client tests in the test job, which
+      # this job already depends on; asserting them again here would buy a
+      # duplicate check and a second place to update.
       - name: Smoke test the image
         run: |
           set -euo pipefail
@@ -92,26 +108,8 @@ jobs:
             exit 1
           fi
 
-          echo "--- SNMPv3 authPriv GET"
           snmpget -v3 -l authPriv -u testuser -a SHA -A authpassword1 \
                   -x AES -X privpassword1 127.0.0.1:1161 1.3.6.1.2.1.1.1.0
-
-          echo "--- SNMPv2c GET"
-          snmpget -v2c -c public 127.0.0.1:1161 1.3.6.1.2.1.1.1.0
-
-          echo "--- SET round trip"
-          snmpset -v2c -c public 127.0.0.1:1161 1.3.6.1.2.1.1.4.0 s "ci@example.com"
-          snmpget -v2c -c public 127.0.0.1:1161 1.3.6.1.2.1.1.4.0 | grep -q "ci@example.com"
-
-          echo "--- non-increasing OID fault makes snmpwalk complain"
-          curl -sf -X POST -d 'name=nonIncreasingOID&value=on' http://127.0.0.1:8080/faults >/dev/null
-          if snmpwalk -v2c -c public 127.0.0.1:1161 1.3.6.1.2.1.1 2>&1 | grep -q "not increasing"; then
-            echo "guard fired as expected"
-          else
-            echo "expected snmpwalk to report a non-increasing OID"
-            exit 1
-          fi
-          curl -sf -X POST http://127.0.0.1:8080/faults/clear >/dev/null
 
       - name: Log in to GHCR
         if: github.event_name == 'push'
