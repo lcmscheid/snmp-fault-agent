@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	"os/exec"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -64,12 +65,19 @@ func v3Flags() []string {
 	}
 }
 
-// varbinds keeps only the value lines of a walk, dropping the diagnostics a
-// fault provokes, so a walk can be compared by what it actually returned.
+// valueLine matches a varbind carrying a value: an OID, then a type token, then
+// the value. Requiring the type is what separates a real varbind both from the
+// diagnostics a fault provokes and from the endOfMibView marker that ends a
+// GETBULK response, which is a varbind with an exception instead of a value and
+// which snmpwalk does not print at all.
+var valueLine = regexp.MustCompile(`^\S+ = [A-Za-z0-9-]+: `)
+
+// varbinds keeps only the value lines of a walk, so two walks can be compared
+// by what they actually returned.
 func varbinds(out string) []string {
 	var kept []string
 	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
-		if strings.Contains(line, " = ") {
+		if valueLine.MatchString(line) {
 			kept = append(kept, line)
 		}
 	}
@@ -219,5 +227,134 @@ func TestNetSNMPDelayTripsClientTimeout(t *testing.T) {
 	}
 	if out, err := runSNMP(t, "snmpget", append(v2cFlags("8"), endpoint, sysDescr)...); err != nil {
 		t.Fatalf("snmpget failed under a 3s delay with an 8s timeout: %v\n%s", err, out)
+	}
+}
+
+// mib2 is a walk root wide enough to reach every type the example config
+// serves, where sysObjects stops before the interface table.
+const mib2 = "1.3.6.1.2.1"
+
+// netSNMPAuth maps the agent's authentication protocol names onto net-snmp's
+// -a values, which spell the SHA-2 family differently.
+var netSNMPAuth = map[string]string{
+	"MD5":    "MD5",
+	"SHA":    "SHA",
+	"SHA224": "SHA-224",
+	"SHA256": "SHA-256",
+	"SHA384": "SHA-384",
+	"SHA512": "SHA-512",
+}
+
+// netSNMPPriv maps the agent's privacy protocol names onto net-snmp's -x
+// values. The Reeder key-extension variants have no entry because net-snmp has
+// no way to ask for them: -x takes DES, AES, AES-192 and AES-256, and the last
+// two use the Blumenthal extension. A user configured with AES192C or AES256C
+// is therefore skipped rather than failed — the limit is in the client, and
+// TestKeyExtensionSchemesDiffer already covers the distinction on our side.
+var netSNMPPriv = map[string]string{
+	"DES":    "DES",
+	"AES":    "AES",
+	"AES192": "AES-192",
+	"AES256": "AES-256",
+}
+
+// userFlags renders one configured user as net-snmp credential flags, reporting
+// false when net-snmp cannot express that combination.
+func userFlags(u UserConfig) ([]string, bool) {
+	flags := []string{"-v3", "-l", u.SecurityLevel(), "-u", u.Username, "-t", "1", "-r", "0"}
+
+	if u.AuthProtocol != "" {
+		name, ok := netSNMPAuth[u.AuthProtocol]
+		if !ok {
+			return nil, false
+		}
+		flags = append(flags, "-a", name, "-A", u.AuthPassphrase)
+	}
+	if u.PrivProtocol != "" {
+		name, ok := netSNMPPriv[u.PrivProtocol]
+		if !ok {
+			return nil, false
+		}
+		flags = append(flags, "-x", name, "-X", u.PrivPassphrase)
+	}
+	return flags, true
+}
+
+// TestNetSNMPUserMatrix is the foreign-client half of TestUserMatrix, and the
+// half that carries the weight: every user is served with keys the agent
+// derives itself, so gosnmp agreeing only shows the derivation is
+// self-consistent. net-snmp implements the same key localisation independently,
+// so it agreeing is the evidence that the derivation is actually right.
+func TestNetSNMPUserMatrix(t *testing.T) {
+	endpoint, _ := startTestAgent(t)
+
+	auth, err := LoadAuth("examples/auth.json")
+	if err != nil {
+		t.Fatalf("loading auth: %v", err)
+	}
+
+	var ran int
+	for _, u := range auth.Users {
+		t.Run(u.Username, func(t *testing.T) {
+			flags, ok := userFlags(u)
+			if !ok {
+				t.Skipf("net-snmp cannot express %s/%s", u.AuthProtocol, u.PrivProtocol)
+			}
+			ran++
+			if out, err := runSNMP(t, "snmpget", append(flags, endpoint, sysDescr)...); err != nil {
+				t.Fatalf("GET as %s (%s) failed: %v\n%s", u.Username, u.SecurityLevel(), err, out)
+			}
+		})
+	}
+
+	// Without this the suite would report success if every user were skipped,
+	// which is exactly what a protocol-name typo in the maps above would cause.
+	if ran < 5 {
+		t.Fatalf("only %d users were reachable with net-snmp; expected a real matrix", ran)
+	}
+}
+
+// TestNetSNMPBulkWalk covers GETBULK, which has its own PDU shape and packs
+// several varbinds into one response. A walk built on GETNEXT exercises none of
+// that, so the assertion is that both routes return the same varbinds.
+func TestNetSNMPBulkWalk(t *testing.T) {
+	endpoint, _ := startTestAgent(t)
+
+	out, err := runSNMP(t, "snmpwalk", append(v2cFlags("1"), endpoint, mib2)...)
+	if err != nil {
+		t.Fatalf("walk failed: %v\n%s", err, out)
+	}
+	want := varbinds(out)
+	if len(want) < 2 {
+		t.Fatalf("expected the walk to return several varbinds, got %d:\n%s", len(want), out)
+	}
+
+	out, err = runSNMP(t, "snmpbulkwalk", append(v2cFlags("1"), endpoint, mib2)...)
+	if err != nil {
+		t.Fatalf("bulk walk failed: %v\n%s", err, out)
+	}
+	if got := varbinds(out); strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("GETBULK and GETNEXT disagree:\nGETNEXT:\n%s\nGETBULK:\n%s",
+			strings.Join(want, "\n"), strings.Join(got, "\n"))
+	}
+}
+
+// TestNetSNMPRendersDeclaredTypes checks that the types declared in values.json
+// survive the wire: a foreign decoder naming them back is the only evidence the
+// encoding is right rather than merely consistent with our own decoder.
+//
+// These are ASN.1 type names rather than net-snmp diagnostics, so matching on
+// them does not carry the version-drift risk that matching on wording would.
+func TestNetSNMPRendersDeclaredTypes(t *testing.T) {
+	endpoint, _ := startTestAgent(t)
+
+	out, err := runSNMP(t, "snmpwalk", append(v2cFlags("1"), endpoint, mib2)...)
+	if err != nil {
+		t.Fatalf("walk failed: %v\n%s", err, out)
+	}
+	for _, want := range []string{"STRING:", "Timeticks:", "INTEGER:", "Counter32:"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("expected the walk to render a %s value, got:\n%s", want, out)
+		}
 	}
 }

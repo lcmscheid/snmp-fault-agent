@@ -17,3 +17,8 @@ faults in both places would buy a duplicate check and a second place to update.
   cannot get any: GoSNMPServer performs no timeliness check, so no Report PDU is
   ever generated and a CLI client has nothing to react to (see the caveat in
   `faults.go`). Reaching them needs support added to the library first.
+- The three users configured with the Reeder key extension (`AES192C`, `AES256C`)
+  are skipped rather than failed: net-snmp's `-x` offers only DES, AES, AES-192
+  and AES-256, the last two using the Blumenthal extension, so there is no way
+  to ask it for the Reeder variants. `TestKeyExtensionSchemesDiffer` covers the
+  distinction on our side.
