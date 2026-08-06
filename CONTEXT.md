@@ -19,6 +19,14 @@ all — drop, delay, duplicate, truncate, corrupt.
 A fault applied to the decoded response before it is re-marshalled — tooBig,
 non-increasing OID, genErr. The message is well-formed and wrong.
 
+**Timeliness report**:
+The `usmStatsNotInTimeWindows` Report PDU an authoritative engine returns when a
+request's claimed engine boots or time are outside the RFC 3414 §2.2.3 window.
+It is the only answer an engine fault provokes, and the only thing a client can
+resynchronise from. Implemented here because the underlying library has no
+timeliness check at all.
+_Avoid_: error, rejection
+
 **Engine fault**:
 A fault applied to the agent's reported SNMPv3 engine state, such as its boot
 counter or clock.

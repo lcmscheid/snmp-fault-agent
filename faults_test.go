@@ -130,36 +130,3 @@ func TestClearRestoresGoodBehaviour(t *testing.T) {
 		t.Fatalf("expected NoError after clear, got %v", res.Error)
 	}
 }
-
-// TestEngineTimeOffsetDoesNotBreakTheExchange pins down what the engine-time
-// fault actually does, which is less than its name suggests.
-//
-// GoSNMPServer v0.5.2 performs no timeliness check on incoming requests: there
-// is no 150-second window and no usmStatsNotInTimeWindows report in the library
-// at all. So jumping the engine clock changes what the agent reports but does
-// not cause a request to be rejected. This test asserts that non-rejection, so
-// that if the behaviour ever changes — because we implement reports, or because
-// upstream does — it fails and forces us to revisit the fault's documentation.
-func TestEngineTimeOffsetDoesNotBreakTheExchange(t *testing.T) {
-	endpoint, faults := startTestAgent(t)
-	t.Cleanup(faults.Clear)
-
-	client := newClient(t, endpoint)
-
-	// First request performs discovery and syncs boots/time.
-	if _, err := client.Get([]string{sysDescr}); err != nil {
-		t.Fatalf("initial GET failed: %v", err)
-	}
-
-	// Now jump the engine well outside the 150-second window (RFC 3414 §2.2.3)
-	// behind the client's back.
-	if err := faults.Set("engineTimeOffsetS", "600"); err != nil {
-		t.Fatalf("setting fault: %v", err)
-	}
-
-	if _, err := client.Get([]string{sysDescr}); err != nil {
-		t.Fatalf("expected the exchange to survive an engine-time jump, since the "+
-			"library enforces no time window; got %v. If this now fails, the "+
-			"timeliness behaviour changed and the fault docs need updating.", err)
-	}
-}

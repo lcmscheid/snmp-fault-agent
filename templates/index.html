@@ -125,13 +125,13 @@
                value="{{.Faults.TruncateBytes}}" hx-vals='{"name":"truncateBytes"}'>
       </label>
 
-      <label title="Seconds added to the reported engine time, so an already-synced client sees the clock jump. Note: the underlying library performs no timeliness check, so this cannot produce a notInTimeWindow report.">
+      <label title="Seconds added to the reported engine time. An already-synced client sees the clock jump and, once outside the 150-second window, is answered with a usmStatsNotInTimeWindows report until it resynchronises.">
         Engine time offset (s)
         <input type="number" name="value" min="-2000000" max="2000000" step="60"
                value="{{.Faults.EngineTimeOffset.Seconds}}" hx-vals='{"name":"engineTimeOffsetS"}'>
       </label>
 
-      <label title="Added to the reported engine boots, as if the device had restarted. Changes what is reported only; no Report PDU is generated.">
+      <label title="Added to the reported engine boots, as if the device had restarted. An already-synced client is answered with a usmStatsNotInTimeWindows report until it resynchronises.">
         Engine boots bump
         <input type="number" name="value" min="0" max="1000000" step="1"
                value="{{.Faults.EngineBootsBump}}" hx-vals='{"name":"engineBootsBump"}'>

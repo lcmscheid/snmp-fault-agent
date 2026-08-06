@@ -52,13 +52,11 @@ type FaultSet struct {
 
 	// --- Engine level: applied via the agent's security configuration. ---
 	//
-	// Caveat, verified against GoSNMPServer v0.5.2: the underlying library
-	// performs no timeliness check on incoming requests — there is no 150-second
-	// window (RFC 3414 §2.2.3) and no usmStatsNotInTimeWindows report anywhere in
-	// it. These two faults therefore change what the agent *reports*, which a
-	// client holding cached engine state must cope with, but they cannot provoke
-	// a Report PDU. Generating real reports needs support we would have to add
-	// ourselves or upstream.
+	// These two faults invalidate the engine state a client discovered earlier,
+	// which the agent then answers with a usmStatsNotInTimeWindows report — see
+	// timeliness.go, which implements the check because GoSNMPServer v0.5.2 has
+	// none. A client holding cached state must resynchronise from that report
+	// and retry; one that does not is stuck, which is the point.
 
 	// EngineTimeOffset is added to the reported engine time, so a client that
 	// discovered earlier sees the engine's clock jump. Note that a client which

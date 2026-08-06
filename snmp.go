@@ -155,6 +155,10 @@ func serveConn(conn *net.UDPConn, master *server.MasterAgent, faults *Faults, au
 		return err
 	}
 
+	// notInTimeWindows is the usmStatsNotInTimeWindows counter this engine
+	// reports. It lives with the loop because the loop is the engine.
+	var notInTimeWindows uint32
+
 	buf := make([]byte, maxDatagram)
 	for {
 		n, remote, err := conn.ReadFromUDP(buf)
@@ -176,15 +180,34 @@ func serveConn(conn *net.UDPConn, master *server.MasterAgent, faults *Faults, au
 		// lock because this loop is the only writer and runs serially.
 		master.SecurityConfig.AuthoritativeEngineBoots = baseEngineBoots + active.EngineBootsBump
 
-		response, err := master.ResponseForBuffer(request)
+		// The timeliness check comes first because an out-of-window request is
+		// not answered at all: the report replaces the response rather than
+		// modifying it, and the semantic faults below have no GetResponse to
+		// work on.
+		response, err := timelinessReport(pristine, master, auth, notInTimeWindows+1)
 		if err != nil {
-			log.Printf("building response for %s: %v", remote, err)
+			// The request was found out of window and the report could not be
+			// built. RFC 3414 §3.2 (7b) discards such a message rather than
+			// processing it, so answering it normally here would turn a
+			// rejection into a valid response.
+			log.Printf("building timeliness report for %s (%v); discarding the request", remote, err)
+			continue
+		}
+		reported := len(response) > 0
+		if reported {
+			notInTimeWindows++
+			log.Printf("REPORT usmStatsNotInTimeWindows to %s", remote)
+		} else {
+			response, err = master.ResponseForBuffer(request)
+			if err != nil {
+				log.Printf("building response for %s: %v", remote, err)
+			}
 		}
 		if len(response) == 0 {
 			continue
 		}
 
-		if active.anySemantic() {
+		if !reported && active.anySemantic() {
 			if mutated, mErr := applySemanticFaults(response, pristine, active, auth); mErr != nil {
 				log.Printf("semantic fault injection failed for %s (%v); sending unmodified", remote, mErr)
 			} else if mutated != nil {

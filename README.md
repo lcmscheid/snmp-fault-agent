@@ -104,19 +104,27 @@ the web UI — no restart — and can be driven from a test over HTTP.
 | **Drop rate** | A fraction of responses silently discarded. Exercises timeout and retry. |
 | **Delay** | Reply held back. Exceed the client's timeout to force a retry. |
 | **Truncate** | Bytes chopped off the end, producing an undecodable message. |
-| **Engine time offset** | Shifts the reported engine time, so an already-synced client sees the clock jump. |
-| **Engine boots bump** | Raises reported engine boots, as if the device had restarted. |
+| **Engine time offset** | Shifts the reported engine time, so an already-synced client sees the clock jump and is answered with `usmStatsNotInTimeWindows` until it resynchronises. |
+| **Engine boots bump** | Raises reported engine boots, as if the device had restarted. Same effect: the client's cached engine state is stale and must be re-learned. |
 
 The semantic faults (`tooBig`, non-increasing OID, `genErr`) are applied by
 decoding the agent's own response, mutating it, and re-marshalling — so the
 message is **correctly authenticated and encrypted** and is wrong in exactly the
 intended way, rather than merely failing its digest check.
 
-> **Known limitation.** The two engine-level faults change what the agent
-> *reports*, but cannot provoke a `usmStatsNotInTimeWindows` report: the
-> underlying [GoSNMPServer](https://github.com/slayercat/GoSNMPServer) v0.5.2
-> implements no timeliness check at all — no 150-second window (RFC 3414 §2.2.3)
-> and no `usmStats` reports. Real report generation would have to be added.
+The timeliness check behind the two engine faults is this agent's own:
+[GoSNMPServer](https://github.com/slayercat/GoSNMPServer) v0.5.2 implements none
+— no 150-second window (RFC 3414 §2.2.3) and no `usmStats` reports at all — so
+an authenticated request whose engine boots or time fall outside the window is
+answered here with a `usmStatsNotInTimeWindows` Report PDU, authenticated at
+`authNoPriv` with the requesting user's key and carrying the agent's real engine
+state. That is what a client resynchronises from; a client that cannot is stuck
+at the first stale request, which is the path these faults exist to reach.
+
+> A client that discovers *after* a fault is set sees a consistent view and
+> notices nothing — the faults invalidate cached state, so there has to be
+> cached state. This is why a one-shot `snmpget` never sees the fault, only the
+> ordinary time-synchronisation exchange.
 
 ### Driving faults from a test
 

@@ -13,10 +13,12 @@ faults in both places would buy a duplicate check and a second place to update.
 - Assertions are on exit codes and semantics rather than net-snmp's exact
   wording, so the unpinned `snmp` package can drift with the runner image
   without turning CI red for reasons unrelated to a change.
-- `EngineTimeOffset` and `EngineBootsBump` have no foreign-client coverage and
-  cannot get any: GoSNMPServer performs no timeliness check, so no Report PDU is
-  ever generated and a CLI client has nothing to react to (see the caveat in
-  `faults.go`). Reaching them needs support added to the library first.
+- `EngineTimeOffset` and `EngineBootsBump` have no foreign-client coverage: a
+  CLI client is a fresh process that synchronises with whatever the agent
+  reports, so it never holds the stale engine state those faults invalidate.
+  What is covered foreign is the `usmStatsNotInTimeWindows` report that makes
+  them recoverable — net-snmp is made to skip discovery with `-e`, which forces
+  it through the report path.
 - The three users configured with the Reeder key extension (`AES192C`, `AES256C`)
   are skipped rather than failed: net-snmp's `-x` offers only DES, AES, AES-192
   and AES-256, the last two using the Blumenthal extension, so there is no way

@@ -18,9 +18,10 @@ import (
 // deliberately unpinned, so a reworded diagnostic must not turn CI red. See
 // docs/adr/0001-foreign-client-tests-run-against-source.md.
 //
-// EngineTimeOffset and EngineBootsBump have no test here and cannot get one:
-// GoSNMPServer performs no timeliness check, so no Report PDU is ever generated
-// and a CLI client has nothing to react to. The caveat is in faults.go.
+// EngineTimeOffset and EngineBootsBump have no test here. A CLI client is a
+// fresh process each time: it synchronises with whatever engine state the agent
+// reports and so is never holding the stale state those faults invalidate. What
+// can be shown foreign is the report that makes them recoverable at all, below.
 
 // requireNetSNMP is set in CI so that a failed install is a failure rather than
 // a suite that skips every test and reports success.
@@ -353,5 +354,43 @@ func TestNetSNMPRendersDeclaredTypes(t *testing.T) {
 		if !strings.Contains(out, want) {
 			t.Errorf("expected the walk to render a %s value, got:\n%s", want, out)
 		}
+	}
+}
+
+// TestNetSNMPResynchronisesFromATimelinessReport is the foreign half of the
+// timeliness check. Given -e, net-snmp skips discovery and sends an
+// authenticated request claiming boots 0 and time 0 — outside the window by
+// RFC 3414 §2.2.3 — so the only route to a value is: agent reports
+// usmStatsNotInTimeWindows, client authenticates that report, learns the
+// engine state from it and retries. A report that failed its digest, named the
+// wrong counter or carried the wrong engine state would leave net-snmp with
+// nothing to recover from, so exiting 0 with a value is the assertion.
+//
+// Both security levels are run because the report is sent at authNoPriv
+// whatever the request was: an authPriv client accepting it is the part our own
+// client library cannot independently confirm.
+func TestNetSNMPResynchronisesFromATimelinessReport(t *testing.T) {
+	endpoint, _ := startTestAgent(t)
+	engineID := "0x" + testAuth(t).WireEngineID()
+
+	for _, u := range []UserConfig{
+		{Username: "testuser", AuthProtocol: "SHA", AuthPassphrase: "authpassword1",
+			PrivProtocol: "AES", PrivPassphrase: "privpassword1"},
+		{Username: "md5user", AuthProtocol: "MD5", AuthPassphrase: "authpassword1"},
+	} {
+		t.Run(u.Username, func(t *testing.T) {
+			flags, ok := userFlags(u)
+			if !ok {
+				t.Fatalf("net-snmp cannot express %s/%s", u.AuthProtocol, u.PrivProtocol)
+			}
+			args := append(flags, "-e", engineID, endpoint, sysDescr)
+			out, err := runSNMP(t, "snmpget", args...)
+			if err != nil {
+				t.Fatalf("GET without discovery failed, so the report was not usable: %v\n%s", err, out)
+			}
+			if len(varbinds(out)) != 1 {
+				t.Fatalf("expected one varbind after the resynchronisation, got:\n%s", out)
+			}
+		})
 	}
 }
