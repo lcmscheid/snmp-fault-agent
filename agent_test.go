@@ -209,10 +209,7 @@ func TestSetOverV2C(t *testing.T) {
 func TestUserMatrix(t *testing.T) {
 	endpoint, _ := startTestAgent(t)
 
-	auth, err := LoadAuth("examples/auth.json")
-	if err != nil {
-		t.Fatalf("loading auth: %v", err)
-	}
+	auth := testAuth(t)
 	if len(auth.Users) < 5 {
 		t.Fatalf("the example config should exercise a real matrix, got %d users", len(auth.Users))
 	}
@@ -238,10 +235,7 @@ func TestUserMatrix(t *testing.T) {
 func TestFaultsUnderEachUser(t *testing.T) {
 	endpoint, faults := startTestAgent(t)
 
-	auth, err := LoadAuth("examples/auth.json")
-	if err != nil {
-		t.Fatalf("loading auth: %v", err)
-	}
+	auth := testAuth(t)
 
 	if err := faults.Set("tooBig", "on"); err != nil {
 		t.Fatalf("setting fault: %v", err)
@@ -277,5 +271,43 @@ func TestUnknownUserIsRefused(t *testing.T) {
 	})
 	if res, err := client.Get([]string{sysDescr}); err == nil && res.Error == gosnmp.NoError {
 		t.Fatal("expected an unconfigured user to be refused")
+	}
+}
+
+// TestV2CDisabledIsRefused covers a mode the example config cannot demonstrate,
+// because an example that answers nothing at v2c would be a poor example: an
+// empty community turns v2c off entirely. The configuration is written out here
+// so the thing under test is visible next to the assertion.
+func TestV2CDisabledIsRefused(t *testing.T) {
+	const authJSON = `{
+	  "engineID": "printer-lab-3",
+	  "community": "",
+	  "users": [
+	    {"username": "testuser", "authProtocol": "SHA", "authPassphrase": "authpassword1",
+	     "privProtocol": "AES", "privPassphrase": "privpassword1"}
+	  ]
+	}`
+	const valuesJSON = `{
+	  "values": [
+	    {"name": "System Description", "oid": "1.3.6.1.2.1.1.1.0", "type": "string",
+	     "readOnly": true, "values": ["Router model A"]}
+	  ]
+	}`
+
+	endpoint, _ := startAgentJSON(t, authJSON, valuesJSON)
+
+	v2c := newV2CClient(t, endpoint)
+	if res, err := v2c.Get([]string{sysDescr}); err == nil && res.Error == gosnmp.NoError {
+		t.Error("expected v2c to be refused when no community is configured")
+	}
+
+	// v3 must be unaffected: disabling v2c is a narrowing of the surface, not a
+	// broken agent.
+	res, err := newClient(t, endpoint).Get([]string{sysDescr})
+	if err != nil {
+		t.Fatalf("v3 GET failed with v2c disabled: %v", err)
+	}
+	if res.Error != gosnmp.NoError {
+		t.Fatalf("expected NoError over v3, got %v", res.Error)
 	}
 }

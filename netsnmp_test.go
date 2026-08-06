@@ -288,10 +288,7 @@ func userFlags(u UserConfig) ([]string, bool) {
 func TestNetSNMPUserMatrix(t *testing.T) {
 	endpoint, _ := startTestAgent(t)
 
-	auth, err := LoadAuth("examples/auth.json")
-	if err != nil {
-		t.Fatalf("loading auth: %v", err)
-	}
+	auth := testAuth(t)
 
 	var ran int
 	for _, u := range auth.Users {

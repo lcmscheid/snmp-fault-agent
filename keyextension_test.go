@@ -73,14 +73,12 @@ func TestKeyExtensionSchemesDiffer(t *testing.T) {
 	}
 }
 
-// TestExampleConfigExercisesBothKeyExtensions is the guard that matters: it
-// checks the *shipped* configuration, not a hand-picked pairing, so a future
-// edit that quietly neuters the matrix fails here.
-func TestExampleConfigExercisesBothKeyExtensions(t *testing.T) {
-	auth, err := LoadAuth("examples/auth.json")
-	if err != nil {
-		t.Fatalf("loading auth: %v", err)
-	}
+// keyExtensionCoverage counts how many of a config's users genuinely exercise
+// each key-extension scheme, so both the served configuration and the shipped
+// example can be held to the same claim without copying the derivation.
+func keyExtensionCoverage(t *testing.T, auth *AuthConfig) (blumenthal, reeder int) {
+	t.Helper()
+
 	engineData, err := auth.EngineIDData()
 	if err != nil {
 		t.Fatalf("engine ID: %v", err)
@@ -96,7 +94,6 @@ func TestExampleConfigExercisesBothKeyExtensions(t *testing.T) {
 		gosnmp.AES256C: gosnmp.AES256,
 	}
 
-	var blumenthal, reeder int
 	for _, u := range auth.Users {
 		other, extended := counterpart[u.privProto()]
 		if !extended {
@@ -123,7 +120,15 @@ func TestExampleConfigExercisesBothKeyExtensions(t *testing.T) {
 			reeder++
 		}
 	}
+	return blumenthal, reeder
+}
 
+// requireBothKeyExtensions is the assertion behind the claim that both schemes
+// are verified on every commit.
+func requireBothKeyExtensions(t *testing.T, auth *AuthConfig) {
+	t.Helper()
+
+	blumenthal, reeder := keyExtensionCoverage(t, auth)
 	if blumenthal == 0 {
 		t.Error("no configured user genuinely exercises the Blumenthal key extension: " +
 			"pair AES192/AES256 with an auth hash shorter than the key (MD5 or SHA)")
@@ -133,4 +138,12 @@ func TestExampleConfigExercisesBothKeyExtensions(t *testing.T) {
 			"pair AES192C/AES256C with an auth hash shorter than the key (MD5 or SHA)")
 	}
 	t.Logf("%d users exercise Blumenthal, %d exercise Reeder", blumenthal, reeder)
+}
+
+// TestConfiguredUsersExerciseBothKeyExtensions checks the configuration the
+// agent is actually served with, so an edit that quietly neuters the matrix
+// fails here. The same claim about the shipped example is asserted separately,
+// in examples_test.go.
+func TestConfiguredUsersExerciseBothKeyExtensions(t *testing.T) {
+	requireBothKeyExtensions(t, testAuth(t))
 }

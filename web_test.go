@@ -8,19 +8,12 @@ import (
 	"testing"
 )
 
-// newTestHandler builds the web UI over the example configuration.
+// newTestHandler builds the web UI over the default test configuration.
 func newTestHandler(t *testing.T) (http.Handler, *AuthConfig) {
 	t.Helper()
 
-	auth, err := LoadAuth("examples/auth.json")
-	if err != nil {
-		t.Fatalf("loading auth: %v", err)
-	}
-	defs, err := LoadValues("examples/values.json")
-	if err != nil {
-		t.Fatalf("loading values: %v", err)
-	}
-	store := NewStore(defs, rand.New(rand.NewSource(1)))
+	auth := testAuth(t)
+	store := NewStore(testValues(t), rand.New(rand.NewSource(1)))
 	return newWebHandler(auth, store, &Faults{}, "127.0.0.1:1161"), auth
 }
 
