@@ -19,38 +19,6 @@ func writeTemp(t *testing.T, name, content string) string {
 	return path
 }
 
-// TestLoadAuthFlatFileIsOneUser pins the backwards-compatible form: the original
-// single-user file had the user's fields at the top level, and files written
-// against that shape must keep working.
-func TestLoadAuthFlatFileIsOneUser(t *testing.T) {
-	path := writeTemp(t, "auth.json", `{
-		"username": "testuser",
-		"authProtocol": "SHA",
-		"authPassphrase": "authpassword1",
-		"privProtocol": "AES",
-		"privPassphrase": "privpassword1",
-		"engineID": "printer-lab-3"
-	}`)
-
-	cfg, err := LoadAuth(path)
-	if err != nil {
-		t.Fatalf("loading flat auth file: %v", err)
-	}
-	if len(cfg.Users) != 1 {
-		t.Fatalf("expected 1 user, got %d", len(cfg.Users))
-	}
-	u := cfg.Users[0]
-	if u.Username != "testuser" {
-		t.Errorf("username = %q, want testuser", u.Username)
-	}
-	if u.SecurityLevel() != "authPriv" {
-		t.Errorf("security level = %q, want authPriv", u.SecurityLevel())
-	}
-	if cfg.EngineIDLabel() != "printer-lab-3" {
-		t.Errorf("engine label = %q, want printer-lab-3", cfg.EngineIDLabel())
-	}
-}
-
 // TestLoadAuthUsersArray covers the multi-user form, which is what makes an
 // auth x priv matrix testable in a single process rather than one agent per
 // combination.
@@ -89,7 +57,7 @@ func TestLoadAuthUsersArray(t *testing.T) {
 // client library needs a v2c target from its very first stage, long before it
 // can speak v3.
 func TestLoadAuthDefaultsCommunity(t *testing.T) {
-	path := writeTemp(t, "auth.json", `{"username": "testuser"}`)
+	path := writeTemp(t, "auth.json", `{"users": [{"username": "testuser"}]}`)
 	cfg, err := LoadAuth(path)
 	if err != nil {
 		t.Fatalf("loading auth: %v", err)
@@ -106,7 +74,7 @@ func TestLoadAuthDefaultsCommunity(t *testing.T) {
 // community means v3 only. It cannot be registered as a route because the empty
 // string is already the v3 context name.
 func TestLoadAuthEmptyCommunityDisablesV2C(t *testing.T) {
-	path := writeTemp(t, "auth.json", `{"username": "testuser", "community": ""}`)
+	path := writeTemp(t, "auth.json", `{"users": [{"username": "testuser"}], "community": ""}`)
 	cfg, err := LoadAuth(path)
 	if err != nil {
 		t.Fatalf("loading auth: %v", err)

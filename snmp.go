@@ -8,17 +8,8 @@ import (
 	"time"
 
 	"github.com/gosnmp/gosnmp"
-	"github.com/sirupsen/logrus"
 	server "github.com/slayercat/GoSNMPServer"
 )
-
-// agentLogger returns an Info-level logger so the agent reports activity
-// without the firehose of the library's default Trace level.
-func agentLogger() server.ILogger {
-	l := logrus.New()
-	l.SetLevel(logrus.InfoLevel)
-	return server.WrapLogrus(l)
-}
 
 // baseEngineBoots is the engine boots value reported when no restart is being
 // simulated. Real agents start at 1 after their first boot.
@@ -94,7 +85,10 @@ func buildAgent(auth *AuthConfig, store *Store, faults *Faults) (*server.MasterA
 	}
 
 	master := &server.MasterAgent{
-		Logger:         agentLogger(),
+		// The library's own logging is discarded: its default is Trace, and
+		// everything worth knowing — every report, every faulted response — is
+		// logged by this file at the point it happens.
+		Logger:         server.NewDiscardLogger(),
 		SecurityConfig: sec,
 		SubAgents: []*server.SubAgent{
 			{

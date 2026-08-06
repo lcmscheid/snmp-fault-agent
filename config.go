@@ -246,16 +246,11 @@ func (a AuthConfig) WireEngineID() string {
 	return hex.EncodeToString([]byte(raw))
 }
 
-// authFile is the on-disk shape of the auth JSON. It carries the multi-user
-// form and, inline, the fields of the original single-user form, so files
-// written against the earlier schema keep loading.
+// authFile is the on-disk shape of the auth JSON.
 type authFile struct {
 	EngineID  string       `json:"engineID"`
 	Community *string      `json:"community"` // pointer so "unset" is distinguishable from ""
 	Users     []UserConfig `json:"users"`
-
-	// The flat single-user form.
-	UserConfig
 }
 
 // LoadAuth reads and validates the auth JSON file.
@@ -276,15 +271,6 @@ func LoadAuth(path string) (*AuthConfig, error) {
 		cfg.Community = defaultCommunity
 	} else {
 		cfg.Community = *f.Community
-	}
-
-	// The flat form: the user's fields sit at the top level. Accept it only when
-	// there is no users array, so a file cannot half-use both shapes and leave
-	// the reader guessing which one won.
-	if len(cfg.Users) == 0 && strings.TrimSpace(f.Username) != "" {
-		cfg.Users = []UserConfig{f.UserConfig}
-	} else if len(cfg.Users) > 0 && strings.TrimSpace(f.Username) != "" {
-		return nil, fmt.Errorf("%s: use either a top-level user or a \"users\" array, not both", path)
 	}
 
 	if len(cfg.Users) == 0 {

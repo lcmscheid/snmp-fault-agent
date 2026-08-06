@@ -79,11 +79,10 @@ func TestKeyExtensionSchemesDiffer(t *testing.T) {
 func keyExtensionCoverage(t *testing.T, auth *AuthConfig) (blumenthal, reeder int) {
 	t.Helper()
 
-	engineData, err := auth.EngineIDData()
+	engineID, err := auth.EngineIDBytes()
 	if err != nil {
 		t.Fatalf("engine ID: %v", err)
 	}
-	engineID := string(append(append([]byte{}, enginePrefix...), []byte(engineData)...))
 
 	// The counterpart cipher for each extended one, so a configured user can be
 	// re-derived under the opposite scheme and the two compared.

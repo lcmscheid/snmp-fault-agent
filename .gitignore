@@ -1,6 +1,5 @@
 # Compiled binary — never commit build output
 /snmpfault
-/snmpsim
 *.exe
 *.test
 

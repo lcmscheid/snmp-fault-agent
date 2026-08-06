@@ -20,11 +20,10 @@ type pageData struct {
 	// fault replaces the engine ID, and a page still showing the configured one
 	// would be handing out the value that no longer works — the wire form on it
 	// is what a client needs for net-snmp's -e.
-	Engine    *AuthConfig
-	Endpoint  string
-	Entries   []Entry
-	Faults    FaultSet
-	FaultsFmt string
+	Engine   *AuthConfig
+	Endpoint string
+	Entries  []Entry
+	Faults   FaultSet
 }
 
 // newWebHandler wires up the HTTP routes for the UI.
@@ -40,12 +39,11 @@ func newWebHandler(auth *AuthConfig, store *Store, faults *Faults, snmpEndpoint 
 		}
 		active := faults.Snapshot()
 		data := pageData{
-			Auth:      auth,
-			Engine:    active.EffectiveAuth(auth),
-			Endpoint:  snmpEndpoint,
-			Entries:   store.Entries(),
-			Faults:    active,
-			FaultsFmt: active.Describe(),
+			Auth:     auth,
+			Engine:   active.EffectiveAuth(auth),
+			Endpoint: snmpEndpoint,
+			Entries:  store.Entries(),
+			Faults:   active,
 		}
 		render(w, "index.html", data)
 	})
