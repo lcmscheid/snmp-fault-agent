@@ -56,14 +56,32 @@ func v2cFlags(timeout string) []string {
 	return []string{"-v2c", "-c", defaultCommunity, "-t", timeout, "-r", "0"}
 }
 
-// v3Flags returns the authPriv credentials of the default example user.
-func v3Flags() []string {
+// v3Flags returns the authPriv credentials of the default example user. It
+// takes a timeout to match v2cFlags, so a test can pin a fault either side of a
+// client timeout under either version.
+func v3Flags(timeout string) []string {
 	return []string{
 		"-v3", "-l", "authPriv", "-u", "testuser",
 		"-a", "SHA", "-A", "authpassword1",
 		"-x", "AES", "-X", "privpassword1",
-		"-t", "1", "-r", "0",
+		"-t", timeout, "-r", "0",
 	}
+}
+
+// snmpVersions is the table the fault tests run over: one entry per version,
+// each supplying net-snmp's credentials and timing. Adding a version later is
+// an entry here rather than a new test.
+//
+// The v3 entry is authPriv because that is the level at which both the digest
+// and the decryption have to survive the agent re-marshalling a faulted
+// response — the claim our own client cannot check, since it derives keys with
+// the same code the agent does and would agree with it even if both were wrong.
+var snmpVersions = []struct {
+	name  string
+	flags func(timeout string) []string
+}{
+	{"v2c", v2cFlags},
+	{"v3", v3Flags},
 }
 
 // valueLine matches a varbind carrying a value: an OID, then a type token, then
@@ -100,7 +118,7 @@ func TestNetSNMPGet(t *testing.T) {
 	endpoint, _ := startTestAgent(t)
 
 	t.Run("v3", func(t *testing.T) {
-		out, err := runSNMP(t, "snmpget", append(v3Flags(), endpoint, sysDescr)...)
+		out, err := runSNMP(t, "snmpget", append(v3Flags("1"), endpoint, sysDescr)...)
 		if err != nil {
 			t.Fatalf("v3 authPriv GET failed: %v\n%s", err, out)
 		}
@@ -134,8 +152,9 @@ func TestNetSNMPSetRoundTrip(t *testing.T) {
 
 // TestNetSNMPFaultsBreakGet covers the faults whose visible effect is that a
 // single GET stops working — by error-status PDU, by a message net-snmp cannot
-// decode, or by nothing arriving at all. Each runs a clean GET first, so a
-// failure here means the fault fired rather than the harness being broken.
+// decode, or by nothing arriving at all. Each fault runs against every version
+// in snmpVersions, and each run performs a clean GET first, so a failure here
+// means the fault fired rather than the harness being broken.
 func TestNetSNMPFaultsBreakGet(t *testing.T) {
 	for _, tc := range []struct{ fault, value string }{
 		{"tooBig", "on"},
@@ -147,17 +166,29 @@ func TestNetSNMPFaultsBreakGet(t *testing.T) {
 		{"dropRate", "1.0"},
 	} {
 		t.Run(tc.fault, func(t *testing.T) {
-			endpoint, faults := startTestAgent(t)
+			var ran int
+			for _, v := range snmpVersions {
+				t.Run(v.name, func(t *testing.T) {
+					ran++
+					endpoint, faults := startTestAgent(t)
 
-			if out, err := runSNMP(t, "snmpget", append(v2cFlags("1"), endpoint, sysDescr)...); err != nil {
-				t.Fatalf("GET failed before the fault was set: %v\n%s", err, out)
+					if out, err := runSNMP(t, "snmpget", append(v.flags("1"), endpoint, sysDescr)...); err != nil {
+						t.Fatalf("GET failed before the fault was set: %v\n%s", err, out)
+					}
+
+					setFault(t, faults, tc.fault, tc.value)
+
+					out, err := runSNMP(t, "snmpget", append(v.flags("1"), endpoint, sysDescr)...)
+					if err == nil {
+						t.Fatalf("snmpget succeeded with %s=%s set; expected it to fail\n%s", tc.fault, tc.value, out)
+					}
+				})
 			}
 
-			setFault(t, faults, tc.fault, tc.value)
-
-			out, err := runSNMP(t, "snmpget", append(v2cFlags("1"), endpoint, sysDescr)...)
-			if err == nil {
-				t.Fatalf("snmpget succeeded with %s=%s set; expected it to fail\n%s", tc.fault, tc.value, out)
+			// Without this the table could report success having run only v2c,
+			// which is the one version that proves nothing about the digest.
+			if ran < len(snmpVersions) {
+				t.Fatalf("only %d of %d versions ran", ran, len(snmpVersions))
 			}
 		})
 	}

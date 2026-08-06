@@ -175,7 +175,7 @@ func TestExampleConfigServesV2CAndWalk(t *testing.T) {
 // printed in the README work verbatim from a real client.
 func TestExampleConfigAnswersNetSNMP(t *testing.T) {
 	endpoint := startExampleAgent(t)
-	if out, err := runSNMP(t, "snmpget", append(v3Flags(), endpoint, sysDescr)...); err != nil {
+	if out, err := runSNMP(t, "snmpget", append(v3Flags("1"), endpoint, sysDescr)...); err != nil {
 		t.Fatalf("net-snmp GET failed against the shipped config: %v\n%s", err, out)
 	}
 }
