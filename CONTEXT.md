@@ -37,6 +37,12 @@ show a fault provokes a real reaction, because the reacting code is code we did
 not write.
 _Avoid_: integration test, e2e test
 
+**Example configuration**:
+The credential and value documents shipped in the container and mounted over to
+replace. It is a user-facing demonstration of what the agent can serve, not a
+test fixture, and it is held to the claims the README makes about it.
+_Avoid_: default config, test config, fixture
+
 **Image smoke test**:
 A test that the published container starts, finds its baked-in configuration,
 and answers at all. Says nothing about faults.
