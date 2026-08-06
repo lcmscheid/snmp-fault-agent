@@ -24,9 +24,19 @@ The `usmStatsNotInTimeWindows` Report PDU an authoritative engine returns when a
 request's claimed engine boots or time are outside the RFC 3414 §2.2.3 window.
 It is what the boots and clock faults provoke, and the only thing a client can
 resynchronise from. An engine ID that changed is a different question, answered
-by a different report. Implemented here because the underlying library has no
-timeliness check at all.
+by an **unknown engine ID report**. Implemented here because the underlying
+library has no timeliness check at all.
 _Avoid_: error, rejection
+
+**Unknown engine ID report**:
+The `usmStatsUnknownEngineIDs` Report PDU an authoritative engine returns when a
+request names an engine ID that is not its own (RFC 3414 §3.2 (3)). It is what
+the engine ID fault provokes, and it is a different PDU from the timeliness
+report, not a variant of it: it is sent **unauthenticated**, because a client
+whose keys are localized to the engine ID it named could not verify a digest
+made with any other one. Recovering from it means re-discovering *and*
+re-localizing, not just resynchronising.
+_Avoid_: discovery response, engine ID report
 
 **Engine ID**:
 The octets identifying this agent as an authoritative SNMPv3 engine. Not only a

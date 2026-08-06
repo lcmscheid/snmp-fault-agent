@@ -68,6 +68,20 @@ type FaultSet struct {
 	// EngineBootsBump is added to the reported engine boots, simulating a
 	// device that has restarted since the client last discovered it.
 	EngineBootsBump uint32
+
+	// EngineIDChange is the identity the agent answers under while it is set, as
+	// if the box had been replaced or re-provisioned. It is the third and worst
+	// way of telling a client its cached engine state is stale: a new engine ID
+	// invalidates every localized key too (RFC 3414 §2.6), so re-discovery
+	// alone does not get a client back in — it must re-derive its keys. A
+	// request naming the old engine ID is answered with the
+	// usmStatsUnknownEngineIDs report of RFC 3414 §3.2 (3); see
+	// unknownEngineIDReport. Users are re-localized to the new engine ID, so a
+	// client that does re-discover and re-localize is served normally.
+	//
+	// Held as a configured label rather than resolved octets, so the same
+	// parsing that reads engineID from the auth file reads it here.
+	EngineIDChange string
 }
 
 // Faults guards a FaultSet for concurrent use: the SNMP goroutine reads it
@@ -134,6 +148,20 @@ func (f *Faults) Set(name, value string) error {
 			return fmt.Errorf("engineTimeOffsetS: %w", err)
 		}
 		f.set.EngineTimeOffset = time.Duration(v) * time.Second
+	case "engineIDChange":
+		// Off is the empty value, so the field doubles as the switch. Validated
+		// through the same path the auth file goes through, since a label that
+		// resolves to nothing would leave every key derived from an empty
+		// engine ID with nothing to say why authentication stopped working.
+		v := strings.TrimSpace(value)
+		if v == "" || v == "off" {
+			f.set.EngineIDChange = ""
+			break
+		}
+		if _, err := (AuthConfig{EngineID: v}).EngineIDData(); err != nil {
+			return fmt.Errorf("engineIDChange: %w", err)
+		}
+		f.set.EngineIDChange = v
 	case "engineBootsBump":
 		v, err := parseInt(value, 0, 1_000_000)
 		if err != nil {
@@ -158,7 +186,7 @@ func (f *Faults) Clear() {
 func (s FaultSet) Any() bool {
 	return s.DropRate > 0 || s.Delay > 0 || s.Duplicate || s.TruncateBytes > 0 ||
 		s.CorruptByte || s.anySemantic() ||
-		s.EngineTimeOffset != 0 || s.EngineBootsBump != 0
+		s.EngineTimeOffset != 0 || s.EngineBootsBump != 0 || s.EngineIDChange != ""
 }
 
 // anySemantic reports whether any fault requires decoding the response.
@@ -271,10 +299,39 @@ func (s FaultSet) Describe() string {
 	if s.EngineBootsBump != 0 {
 		parts = append(parts, fmt.Sprintf("boots +%d", s.EngineBootsBump))
 	}
+	if s.EngineIDChange != "" {
+		parts = append(parts, "engine ID "+s.EngineIDChange)
+	}
 	if len(parts) == 0 {
 		return "none"
 	}
 	return strings.Join(parts, ", ")
+}
+
+// EffectiveAuth returns the credentials as the agent is currently presenting
+// them: with the replacement engine ID when engineIDChange is set, and the
+// configured ones otherwise. Everything that derives a key or names this engine
+// goes through it, because the engine ID is not just a name — USM localizes
+// every key to it, so serving under a new one has to re-localize all of them
+// (RFC 3414 §2.6).
+//
+// The copy is deliberate: the loaded configuration is shared with the web UI,
+// which must keep displaying the identity the agent was started with.
+func (s FaultSet) EffectiveAuth(auth *AuthConfig) *AuthConfig {
+	if s.EngineIDChange == "" {
+		return auth
+	}
+	c := *auth
+	c.EngineID = s.EngineIDChange
+	if _, err := c.EngineIDBytes(); err != nil {
+		// Unreachable: Set validates a replacement before storing it. If one
+		// ever did get through, the configured identity is served whole rather
+		// than half of each — the engine ID the library answers with and the
+		// one our reports name have to be the same value, or a client is told
+		// to re-discover an engine nobody serves.
+		return auth
+	}
+	return &c
 }
 
 // parseFloat parses a bounded float from a form value.

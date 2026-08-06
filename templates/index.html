@@ -45,8 +45,9 @@
   <h2>Identity</h2>
   <div class="card">
     <dl>
-      <dt>Identity (engine ID)</dt><dd>{{.Auth.EngineIDLabel}}</dd>
-      <dt>Engine ID (wire)</dt><dd><code>{{.Auth.WireEngineID}}</code></dd>
+      <dt>Identity (engine ID)</dt>
+      <dd>{{.Engine.EngineIDLabel}}{{if .Faults.EngineIDChange}} <em>(replaced by the engine ID change fault; configured: {{.Auth.EngineIDLabel}})</em>{{end}}</dd>
+      <dt>Engine ID (wire)</dt><dd><code>{{.Engine.WireEngineID}}</code></dd>
       <dt>v2c community</dt>
       <dd>{{if .Auth.V2CEnabled}}<code>{{.Auth.Community}}</code>{{else}}<em>v2c disabled</em>{{end}}</dd>
     </dl>
@@ -135,6 +136,12 @@
         Engine boots bump
         <input type="number" name="value" min="0" max="1000000" step="1"
                value="{{.Faults.EngineBootsBump}}" hx-vals='{"name":"engineBootsBump"}'>
+      </label>
+
+      <label title="Answer as a different engine, as if the box had been replaced. A request naming the old engine ID is answered with an unauthenticated usmStatsUnknownEngineIDs report carrying this one; a client is back in only once it re-discovers and re-localizes its keys. Empty is off.">
+        Engine ID change
+        <input type="text" name="value" placeholder="off"
+               value="{{.Faults.EngineIDChange}}" hx-vals='{"name":"engineIDChange"}'>
       </label>
     </div>
 

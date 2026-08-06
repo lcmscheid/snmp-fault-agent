@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/hex"
 	"net"
 	"testing"
 	"time"
@@ -189,5 +190,143 @@ func TestNoAuthUserIsNotTimeChecked(t *testing.T) {
 
 	if _, err := client.Get([]string{sysDescr}); err != nil {
 		t.Fatalf("a noAuthNoPriv GET failed: %v", err)
+	}
+}
+
+// replacementEngine is the identity the agent takes on when engineIDChange is
+// set in the tests below. It is a label rather than hex so the fault reads like
+// the device swap it stands for.
+const replacementEngine = "replacement-box"
+
+// TestStaleEngineIDGetsAnUnknownEngineIDReport is the case RFC 3414 §3.2 (3)
+// answers and the timeliness check cannot: the request is not out of window, it
+// names an engine that no longer exists. The report must be unauthenticated —
+// a client holding keys localized to the old engine ID could not verify a
+// digest made with the new one — and must carry the new engine ID, since
+// re-discovery is the only way back in.
+func TestStaleEngineIDGetsAnUnknownEngineIDReport(t *testing.T) {
+	endpoint, faults := startTestAgent(t)
+	_, boots, engineTime := syncedClient(t, endpoint)
+
+	if err := faults.Set("engineIDChange", replacementEngine); err != nil {
+		t.Fatalf("setting engineIDChange: %v", err)
+	}
+
+	// Crafted from testAuth, which still holds the original engine ID: that is
+	// exactly the stale state a client keeps across a device replacement.
+	pkt := exchange(t, endpoint, craftGet(t, testAuth(t), "testuser", boots, engineTime))
+
+	if pkt.PDUType != gosnmp.Report {
+		t.Fatalf("expected a Report PDU, got %v", pkt.PDUType)
+	}
+	if len(pkt.Variables) != 1 || pkt.Variables[0].Name != "."+usmStatsUnknownEngineIDs {
+		t.Fatalf("expected one .%s varbind, got %v", usmStatsUnknownEngineIDs, pkt.Variables)
+	}
+	if pkt.MsgFlags&gosnmp.AuthNoPriv != 0 {
+		t.Fatalf("the report was authenticated (flags %v); a client that does not know the engine ID cannot verify it", pkt.MsgFlags)
+	}
+	usm, ok := pkt.SecurityParameters.(*gosnmp.UsmSecurityParameters)
+	if !ok {
+		t.Fatal("report carried no USM parameters, so a client cannot re-discover from it")
+	}
+	want := (&AuthConfig{EngineID: replacementEngine}).WireEngineID()
+	if got := hex.EncodeToString([]byte(usm.AuthoritativeEngineID)); got != want {
+		t.Fatalf("report carried engine ID %s, want the new %s", got, want)
+	}
+}
+
+// TestEngineIDChangeProvokesARelocalization is what the fault exists for, and
+// it drives one already-synced client all the way through rather than starting
+// a fresh one: the client holds the replaced engine ID, the agent must tell it
+// so, and the exchange must survive once it has.
+//
+// The assertion is on the client's key, not only on its engine ID. Re-discovery
+// alone leaves a client authenticating with keys localized to an engine that is
+// gone (RFC 3414 §2.6), so a changed engine ID with an unchanged key would mean
+// the recovery this fault claims to exercise was never exercised.
+func TestEngineIDChangeProvokesARelocalization(t *testing.T) {
+	endpoint, faults := startTestAgent(t)
+	client, _, _ := syncedClient(t, endpoint)
+
+	before, ok := client.SecurityParameters.(*gosnmp.UsmSecurityParameters)
+	if !ok {
+		t.Fatal("client carries no USM parameters after discovery")
+	}
+	wasEngine, wasKey := before.AuthoritativeEngineID, string(before.SecretKey)
+
+	if err := faults.Set("engineIDChange", replacementEngine); err != nil {
+		t.Fatalf("setting engineIDChange: %v", err)
+	}
+
+	if _, err := client.Get([]string{sysDescr}); err != nil {
+		t.Fatalf("expected the client to re-discover from the report and retry; got %v", err)
+	}
+
+	after := client.SecurityParameters.(*gosnmp.UsmSecurityParameters)
+	if after.AuthoritativeEngineID == wasEngine {
+		t.Fatalf("client still names engine %s, so it never re-discovered",
+			hex.EncodeToString([]byte(wasEngine)))
+	}
+	if string(after.SecretKey) == wasKey {
+		t.Fatal("client kept its old key, so it re-discovered without re-localizing")
+	}
+}
+
+// TestUnauthenticatedStaleEngineIDIsReported pins the order of the two checks
+// against RFC 3414 §3.2: the unknown-engine-ID check is step (3) and runs
+// before the message is authenticated at step (6), so a noAuthNoPriv request
+// naming the replaced engine is owed the same report. Without the ordering the
+// agent answers it with a value instead, and a client that cached an engine ID
+// at noAuthNoPriv is never told the device was replaced.
+func TestUnauthenticatedStaleEngineIDIsReported(t *testing.T) {
+	endpoint, faults := startTestAgent(t)
+	if err := faults.Set("engineIDChange", replacementEngine); err != nil {
+		t.Fatalf("setting engineIDChange: %v", err)
+	}
+
+	usm, err := testAuth(t).UsmUserWithEngine("noauthuser")
+	if err != nil {
+		t.Fatalf("building USM parameters: %v", err)
+	}
+	pkt := &gosnmp.SnmpPacket{
+		Version:            gosnmp.Version3,
+		MsgFlags:           gosnmp.NoAuthNoPriv | gosnmp.Reportable,
+		SecurityModel:      gosnmp.UserSecurityModel,
+		SecurityParameters: usm,
+		ContextEngineID:    usm.AuthoritativeEngineID,
+		PDUType:            gosnmp.GetRequest,
+		MsgID:              4243,
+		RequestID:          2425,
+		Variables:          []gosnmp.SnmpPDU{{Name: sysDescr, Type: gosnmp.Null}},
+	}
+	msg, err := pkt.MarshalMsg()
+	if err != nil {
+		t.Fatalf("marshalling the crafted request: %v", err)
+	}
+
+	reply := exchange(t, endpoint, msg)
+	if reply.PDUType != gosnmp.Report {
+		t.Fatalf("a noAuthNoPriv request naming the replaced engine got %v, want a Report", reply.PDUType)
+	}
+	if len(reply.Variables) != 1 || reply.Variables[0].Name != "."+usmStatsUnknownEngineIDs {
+		t.Fatalf("expected one .%s varbind, got %v", usmStatsUnknownEngineIDs, reply.Variables)
+	}
+}
+
+// TestClearingEngineIDChangeRestoresTheOriginal pins the fault as reversible
+// like every other: clearing it puts the original engine ID back, so a client
+// that never left is served again and one that had re-localized sees a second
+// replacement.
+func TestClearingEngineIDChangeRestoresTheOriginal(t *testing.T) {
+	endpoint, faults := startTestAgent(t)
+	if err := faults.Set("engineIDChange", replacementEngine); err != nil {
+		t.Fatalf("setting engineIDChange: %v", err)
+	}
+	faults.Clear()
+
+	_, boots, engineTime := syncedClient(t, endpoint)
+	pkt := exchange(t, endpoint, craftGet(t, testAuth(t), "testuser", boots, engineTime))
+	if pkt.PDUType != gosnmp.GetResponse {
+		t.Fatalf("the original engine ID got %v after the fault was cleared, want a GetResponse", pkt.PDUType)
 	}
 }

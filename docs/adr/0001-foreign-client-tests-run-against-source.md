@@ -18,7 +18,10 @@ faults in both places would buy a duplicate check and a second place to update.
   reports, so it never holds the stale engine state those faults invalidate.
   What is covered foreign is the `usmStatsNotInTimeWindows` report that makes
   them recoverable — net-snmp is made to skip discovery with `-e`, which forces
-  it through the report path.
+  it through the report path. The same `-e` trick covers the engine ID fault,
+  where it hands net-snmp the engine ID of the device that was replaced; the
+  recovery it then has to perform, re-discovery and re-localization, is what a
+  fresh CLI process does unaided, so that half needs no trick at all.
 - The three users configured with the Reeder key extension (`AES192C`, `AES256C`)
   are skipped rather than failed: net-snmp's `-x` offers only DES, AES, AES-192
   and AES-256, the last two using the Blumenthal extension, so there is no way

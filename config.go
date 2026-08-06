@@ -174,12 +174,12 @@ func (a AuthConfig) UsmUserWithEngine(username string) (*gosnmp.UsmSecurityParam
 	if !ok {
 		return nil, fmt.Errorf("no configured user named %q", username)
 	}
-	data, err := a.EngineIDData()
+	data, err := a.EngineIDBytes()
 	if err != nil {
 		return nil, err
 	}
 	usm := u.UsmUser()
-	usm.AuthoritativeEngineID = string(append(append([]byte{}, enginePrefix...), []byte(data)...))
+	usm.AuthoritativeEngineID = data
 	return &usm, nil
 }
 
@@ -224,15 +224,26 @@ func (a AuthConfig) EngineIDData() (string, error) {
 	return string(data), nil
 }
 
-// WireEngineID returns the full hex engine ID as it appears on the wire, i.e.
-// the fixed prefix followed by the data portion. This is the value an SNMP
-// client must trust. Returns "" if the configured engineID is invalid.
-func (a AuthConfig) WireEngineID() string {
+// EngineIDBytes returns the engine ID exactly as it appears on the wire: the
+// fixed prefix followed by the data portion. It is the value USM localizes keys
+// against, and the value a request names when it says which engine it thinks it
+// is talking to, so every comparison and every key derivation goes through it.
+func (a AuthConfig) EngineIDBytes() (string, error) {
 	data, err := a.EngineIDData()
+	if err != nil {
+		return "", err
+	}
+	return string(append(append([]byte{}, enginePrefix...), []byte(data)...)), nil
+}
+
+// WireEngineID returns the engine ID as the hex string an SNMP client must
+// trust. Returns "" if the configured engineID is invalid.
+func (a AuthConfig) WireEngineID() string {
+	raw, err := a.EngineIDBytes()
 	if err != nil {
 		return ""
 	}
-	return hex.EncodeToString(append(append([]byte{}, enginePrefix...), []byte(data)...))
+	return hex.EncodeToString([]byte(raw))
 }
 
 // authFile is the on-disk shape of the auth JSON. It carries the multi-user

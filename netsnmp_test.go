@@ -7,6 +7,7 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+	"time"
 )
 
 // Foreign-client tests: net-snmp drives the agent and the assertion is on what
@@ -23,6 +24,10 @@ import (
 // fresh process each time: it synchronises with whatever engine state the agent
 // reports and so is never holding the stale state those faults invalidate. What
 // can be shown foreign is the report that makes them recoverable at all, below.
+// NewEngineID is the exception: -e lets the test choose the engine ID net-snmp
+// presents, so the stale state can be handed to it, and the recovery from a
+// device replacement — re-discover, re-localize, retry — is a fresh process
+// doing exactly what a CLI client does anyway.
 
 // requireNetSNMP is set in CI so that a failed install is a failure rather than
 // a suite that skips every test and reports success.
@@ -495,4 +500,72 @@ func TestNetSNMPResynchronisesFromATimelinessReport(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestNetSNMPRecoversFromAnEngineIDChange is the foreign half of the
+// engineIDChange fault, and it is testable for the same reason the timeliness
+// report is: -e forces net-snmp past discovery, so the engine ID it presents is
+// one the test chooses rather than one it just learned. That is the stale state
+// a CLI client cannot otherwise hold.
+//
+// Three invocations, one per state a client can be in after a device is
+// replaced. Presenting the old engine ID fails — with our report net-snmp names
+// the engine ID as the problem instead of timing out, but the assertion is on
+// exit status and varbinds rather than its wording (ADR-0001). Discovering
+// afresh is the recovery the fault exists to exercise: it works only because
+// every user is re-localized to the new engine ID, so a client that
+// re-discovers and re-derives its keys is served normally.
+func TestNetSNMPRecoversFromAnEngineIDChange(t *testing.T) {
+	endpoint, faults := startTestAgent(t)
+	oldEngine := "0x" + testAuth(t).WireEngineID()
+	newEngine := "0x" + (&AuthConfig{EngineID: replacementEngine}).WireEngineID()
+
+	if err := faults.Set("engineIDChange", replacementEngine); err != nil {
+		t.Fatalf("setting engineIDChange: %v", err)
+	}
+
+	// Pinned to the old engine ID, net-snmp cannot recover — -e means the user
+	// chose that engine — so the failure is expected. What has to be shown is
+	// that it failed on our report rather than on silence, and a non-zero exit
+	// alone does not say which: a timeout exits non-zero too, and silence is
+	// exactly what this agent used to answer with. Hence the generous -t and
+	// the elapsed check. Timing rather than wording, so net-snmp's diagnostic
+	// can be reworded without turning CI red (ADR-0001).
+	t.Run("stale engine ID", func(t *testing.T) {
+		const timeout = 5 * time.Second
+		start := time.Now()
+		out, err := runSNMP(t, "snmpget", append(v3Flags("5"), "-e", oldEngine, endpoint, sysDescr)...)
+		elapsed := time.Since(start)
+
+		if err == nil {
+			t.Fatalf("the replaced engine ID still served a value:\n%s", out)
+		}
+		if code := exitCode(t, err); code == 0 {
+			t.Fatalf("expected a non-zero exit, got %d:\n%s", code, out)
+		}
+		if elapsed > timeout/2 {
+			t.Fatalf("net-snmp took %s of its %s timeout, so it waited out silence rather than reading a report:\n%s",
+				elapsed.Round(time.Millisecond), timeout, out)
+		}
+	})
+
+	t.Run("re-discovered", func(t *testing.T) {
+		out, err := runSNMP(t, "snmpget", append(v3Flags("1"), endpoint, sysDescr)...)
+		if err != nil {
+			t.Fatalf("a client that re-discovered could not get back in: %v\n%s", err, out)
+		}
+		if len(varbinds(out)) != 1 {
+			t.Fatalf("expected one varbind after re-discovery, got:\n%s", out)
+		}
+	})
+
+	t.Run("new engine ID", func(t *testing.T) {
+		out, err := runSNMP(t, "snmpget", append(v3Flags("1"), "-e", newEngine, endpoint, sysDescr)...)
+		if err != nil {
+			t.Fatalf("the new engine ID was not served: %v\n%s", err, out)
+		}
+		if len(varbinds(out)) != 1 {
+			t.Fatalf("expected one varbind under the new engine ID, got:\n%s", out)
+		}
+	})
 }

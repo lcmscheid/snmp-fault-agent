@@ -108,20 +108,25 @@ the web UI — no restart — and can be driven from a test over HTTP.
 | **Truncate** | Bytes chopped off the end, producing an undecodable message. |
 | **Engine time offset** | *SNMPv3 only.* Shifts the reported engine time, so an already-synced client sees the clock jump and is answered with `usmStatsNotInTimeWindows` until it resynchronises. |
 | **Engine boots bump** | *SNMPv3 only.* Raises reported engine boots, as if the device had restarted. Same effect: the client's cached engine state is stale and must be re-learned. |
+| **Engine ID change** | *SNMPv3 only.* The agent answers as a different engine, as if the box had been replaced. A request naming the old engine ID is answered with an **unauthenticated** `usmStatsUnknownEngineIDs` report carrying the new one — a new engine ID invalidates every localized key too (RFC 3414 §2.6), so re-discovery alone is not enough: a client is back in only once it re-derives its keys against the new value. |
 
 The semantic faults (`tooBig`, non-increasing OID, `genErr`) are applied by
 decoding the agent's own response, mutating it, and re-marshalling — so the
 message is **correctly authenticated and encrypted** and is wrong in exactly the
 intended way, rather than merely failing its digest check.
 
-The timeliness check behind the two engine faults is this agent's own:
-[GoSNMPServer](https://github.com/slayercat/GoSNMPServer) v0.5.2 implements none
-— no 150-second window (RFC 3414 §2.2.3) and no `usmStats` reports at all — so
-an authenticated request whose engine boots or time fall outside the window is
-answered here with a `usmStatsNotInTimeWindows` Report PDU, authenticated at
-`authNoPriv` with the requesting user's key and carrying the agent's real engine
-state. That is what a client resynchronises from; a client that cannot is stuck
-at the first stale request, which is the path these faults exist to reach.
+The checks behind the three engine faults are this agent's own:
+[GoSNMPServer](https://github.com/slayercat/GoSNMPServer) v0.5.2 implements
+neither — no 150-second window (RFC 3414 §2.2.3) and no `usmStats` reports at
+all. So an authenticated request whose engine boots or time fall outside the
+window is answered here with a `usmStatsNotInTimeWindows` Report PDU,
+authenticated at `authNoPriv` with the requesting user's key and carrying the
+agent's real engine state; and one naming an engine ID that is not ours is
+answered with a `usmStatsUnknownEngineIDs` report (RFC 3414 §3.2 (3)), sent
+**unauthenticated**, because a client whose keys are localized to the engine ID
+it named could not verify a digest made with the new one. Both are what a client
+recovers from; a client that cannot is stuck at the first stale request, which
+is the path these faults exist to reach.
 
 > A client that discovers *after* a fault is set sees a consistent view and
 > notices nothing — the faults invalidate cached state, so there has to be
@@ -142,7 +147,8 @@ curl -X POST http://localhost:8080/faults/clear
 
 Fault names match the UI fields: `tooBig`, `nonIncreasingOID`, `genErr`,
 `duplicate`, `corruptByte`, `dropRate`, `delayMS`, `truncateBytes`,
-`engineTimeOffsetS`, `engineBootsBump`.
+`engineTimeOffsetS`, `engineBootsBump`, `engineIDChange` (a label or `0x`-prefixed
+hex, empty to turn it off).
 
 ## Tests
 

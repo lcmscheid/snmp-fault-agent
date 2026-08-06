@@ -155,9 +155,9 @@ func serveConn(conn *net.UDPConn, master *server.MasterAgent, faults *Faults, au
 		return err
 	}
 
-	// notInTimeWindows is the usmStatsNotInTimeWindows counter this engine
-	// reports. It lives with the loop because the loop is the engine.
-	var notInTimeWindows uint32
+	// counts holds the report counters this engine reports. They live with the
+	// loop because the loop is the engine.
+	var counts reportCounters
 
 	buf := make([]byte, maxDatagram)
 	for {
@@ -175,28 +175,39 @@ func serveConn(conn *net.UDPConn, master *server.MasterAgent, faults *Faults, au
 
 		active := faults.Snapshot()
 
+		// The engine ID the agent answers under is the fault's when
+		// engineIDChange is set. Every key derives from it (RFC 3414 §2.6), so
+		// this one substitution re-localizes the whole agent: the library
+		// derives per request from SecurityConfig, and our own decoding and
+		// reporting go through effective.
+		effective := active.EffectiveAuth(auth)
+		// The error cannot fire: the loader validated the configured label and
+		// Faults.Set the replacement, and EffectiveAuth serves the configured
+		// identity whole rather than handing back one that does not resolve.
+		data, _ := effective.EngineIDData()
+		master.SecurityConfig.AuthoritativeEngineID = server.SNMPEngineID{EngineIDData: data}
+
 		// Engine boots is a plain field rather than a hook, so a simulated
 		// restart is applied just before the response is built. Safe without a
 		// lock because this loop is the only writer and runs serially.
 		master.SecurityConfig.AuthoritativeEngineBoots = baseEngineBoots + active.EngineBootsBump
 
-		// The timeliness check comes first because an out-of-window request is
+		// The engine checks come first because a request that earns a report is
 		// not answered at all: the report replaces the response rather than
 		// modifying it, and the semantic faults below have no GetResponse to
 		// work on.
-		response, err := timelinessReport(pristine, master, auth, notInTimeWindows+1)
+		response, counter, err := engineReport(pristine, master, effective, &counts)
 		if err != nil {
-			// The request was found out of window and the report could not be
-			// built. RFC 3414 §3.2 (7b) discards such a message rather than
-			// processing it, so answering it normally here would turn a
-			// rejection into a valid response.
-			log.Printf("building timeliness report for %s (%v); discarding the request", remote, err)
+			// The request earned a report and the report could not be built.
+			// RFC 3414 §3.2 discards such a message rather than processing it,
+			// so answering it normally here would turn a rejection into a valid
+			// response.
+			log.Printf("building %s report for %s (%v); discarding the request", counter, remote, err)
 			continue
 		}
 		reported := len(response) > 0
 		if reported {
-			notInTimeWindows++
-			log.Printf("REPORT usmStatsNotInTimeWindows to %s", remote)
+			log.Printf("REPORT %s to %s", counter, remote)
 		} else {
 			response, err = master.ResponseForBuffer(request)
 			if err != nil {
@@ -208,7 +219,7 @@ func serveConn(conn *net.UDPConn, master *server.MasterAgent, faults *Faults, au
 		}
 
 		if !reported && active.anySemantic() {
-			if mutated, mErr := applySemanticFaults(response, pristine, active, auth); mErr != nil {
+			if mutated, mErr := applySemanticFaults(response, pristine, active, effective); mErr != nil {
 				log.Printf("semantic fault injection failed for %s (%v); sending unmodified", remote, mErr)
 			} else if mutated != nil {
 				response = mutated

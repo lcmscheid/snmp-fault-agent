@@ -12,6 +12,16 @@ here, in `timeliness.go`, sitting in front of the library's response path: an
 authenticated v3 request whose claimed engine boots or time are outside the
 window is answered with a report and never processed further.
 
+The engine ID fault later arrived with the same shape and joined the same file.
+The library answers a request naming an engine ID that is not its own with
+nothing a client can act on, so the `usmStatsUnknownEngineIDs` report of RFC
+3414 §3.2 (3) is ours too. The two checks are one decision, not two: same gap,
+same place, same reason. They differ in the two ways the RFC makes them differ —
+the engine ID check runs before authentication at step (6) rather than after it
+at step (7), and its report is sent **unauthenticated**, since a client whose
+keys are localized to the engine ID it named could not verify a digest made with
+any other one.
+
 ## Considered options
 
 Fixing it upstream would put the check where it belongs and serve every user of
@@ -38,9 +48,14 @@ mistake.
   GoSNMPServer verifies it, so a forged request already gets a real answer out
   of this agent; making the report stricter than the value it guards would buy
   nothing.
-- A one-shot CLI client never sees the engine faults, only the ordinary
-  time-synchronisation exchange: it holds no cached state for a fault to
+- Discovery stays the library's: a request naming no engine ID at all is left
+  alone, so the exchange a client opens with is answered by the code that knows
+  how to answer it. Only a request naming an engine that is not here is taken.
+- A one-shot CLI client never sees the boots and clock faults, only the ordinary
+  time-synchronisation exchange: it holds no cached state for those to
   invalidate. What it does exercise, and what the foreign-client suite asserts,
-  is that the report itself is usable — net-snmp is made to skip discovery with
-  `-e`, so the only route to a value is authenticating our report and
-  resynchronising from it.
+  is that the reports themselves are usable — net-snmp is made to skip discovery
+  with `-e`, so the only route to a value is acting on what we sent back. The
+  engine ID fault goes further: re-discovering and re-localizing is what a fresh
+  CLI process does unaided, so the recovery from a replaced device is foreign
+  end to end.
