@@ -100,12 +100,12 @@ the web UI — no restart — and can be driven from a test over HTTP.
 | **Non-increasing OID** | The requested OID echoed straight back. An unguarded walk loops forever; `snmpwalk` reports `Error: OID not increasing`. |
 | **genErr** | A generic error instead of a value. |
 | **Duplicate response** | Every response sent twice. The client must ignore the second copy. |
-| **Corrupt a byte** | One bit flipped mid-message. At v3 the digest check fails; at v2c the BER decode does. |
+| **Corrupt a byte** | One bit flipped mid-message. Nothing usable arrives at either version and the client times out. Not for the reason you would expect at v3: in a response the size of a GET the flip lands in the USM security parameters, so net-snmp fails to parse them and discards the message before the digest is ever checked. |
 | **Drop rate** | A fraction of responses silently discarded. Exercises timeout and retry. |
 | **Delay** | Reply held back. Exceed the client's timeout to force a retry. |
 | **Truncate** | Bytes chopped off the end, producing an undecodable message. |
-| **Engine time offset** | Shifts the reported engine time, so an already-synced client sees the clock jump and is answered with `usmStatsNotInTimeWindows` until it resynchronises. |
-| **Engine boots bump** | Raises reported engine boots, as if the device had restarted. Same effect: the client's cached engine state is stale and must be re-learned. |
+| **Engine time offset** | *SNMPv3 only.* Shifts the reported engine time, so an already-synced client sees the clock jump and is answered with `usmStatsNotInTimeWindows` until it resynchronises. |
+| **Engine boots bump** | *SNMPv3 only.* Raises reported engine boots, as if the device had restarted. Same effect: the client's cached engine state is stale and must be re-learned. |
 
 The semantic faults (`tooBig`, non-increasing OID, `genErr`) are applied by
 decoding the agent's own response, mutating it, and re-marshalling — so the
@@ -154,6 +154,15 @@ still authenticates, **for every configured user** — if re-marshalling ever br
 the digest, or the fault path reached for the wrong user's keys, the client would
 report an authentication failure and never see the injected fault, making the
 fault useless.
+
+The foreign-client suite drives the agent with `net-snmp`, which shares no code
+with it, so a fault is proven by a client reacting to it rather than by our own
+client agreeing with us. Its fault tests run at **SNMPv2c and at SNMPv3
+authPriv** — the engine faults excepted, since they exist only at v3 — because
+authPriv is the level at which a re-marshalled response has to survive both the
+digest and the decryption to reach a client's fault handling at all. Subtests
+name the version they ran under, and skip when `net-snmp` is not installed —
+except under CI, where a missing tool fails instead.
 
 CI additionally builds the container image and drives the running container with
 real `net-snmp` tools, so an image that starts but does not answer is never

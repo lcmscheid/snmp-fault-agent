@@ -34,9 +34,11 @@ type FaultSet struct {
 	// TruncateBytes removes this many bytes from the end of the response,
 	// producing a message that fails to decode.
 	TruncateBytes int
-	// CorruptByte flips one bit in the middle of the response. At v2c this
-	// surfaces as a BER decode error; at v3 the digest check fails first,
-	// which is itself worth testing.
+	// CorruptByte flips one bit in the middle of the response. Neither version
+	// yields a decodable message: net-snmp discards it and the request times
+	// out. Not on the digest at v3, though — in a response the size of a GET
+	// the midpoint falls inside the USM security parameters, so parsing them
+	// fails before the digest is checked.
 	CorruptByte bool
 
 	// --- Semantic: applied to the decoded response before re-marshalling. ---
