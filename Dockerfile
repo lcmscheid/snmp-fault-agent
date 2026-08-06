@@ -31,8 +31,12 @@ EXPOSE 8080/tcp
 
 USER nonroot:nonroot
 
-ENTRYPOINT ["/usr/local/bin/snmpfault"]
-CMD ["-endpoint", "0.0.0.0:1161", \
-     "-http", "0.0.0.0:8080", \
-     "-auth", "/etc/snmpfault/auth.json", \
-     "-values", "/etc/snmpfault/values.json"]
+# In ENTRYPOINT rather than CMD so that `docker run` arguments are appended to
+# these rather than replacing them, which is what lets one flag be overridden
+# without restating the rest. The cost is that a deployment replacing the
+# command entirely no longer inherits them — see the README.
+ENTRYPOINT ["/usr/local/bin/snmpfault", \
+            "-endpoint", "0.0.0.0:1161", \
+            "-http", "0.0.0.0:8080", \
+            "-auth", "/etc/snmpfault/auth.json", \
+            "-values", "/etc/snmpfault/values.json"]

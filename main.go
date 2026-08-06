@@ -18,11 +18,21 @@ func main() {
 	httpAddr := flag.String("http", ":8080", "address the web UI listens on (host:port)")
 	authPath := flag.String("auth", "auth.json", "path to the SNMPv3 credentials JSON file")
 	valuesPath := flag.String("values", "values.json", "path to the values JSON file")
+	// flag.Func rather than flag.String: the override has to be distinguishable
+	// from an absent flag, and an unset pointer says that where "" cannot.
+	var engineID *string
+	flag.Func("engineid", "engine ID to serve as, overriding the auth file (label, or 0x-prefixed hex)",
+		func(v string) error { engineID = &v; return nil })
 	flag.Parse()
 
 	auth, err := LoadAuth(*authPath)
 	if err != nil {
 		log.Fatalf("loading auth: %v", err)
+	}
+	if engineID != nil {
+		if err := auth.OverrideEngineID(*engineID); err != nil {
+			log.Fatalf("-engineid: %v", err)
+		}
 	}
 	defs, err := LoadValues(*valuesPath)
 	if err != nil {

@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/gosnmp/gosnmp"
@@ -167,5 +168,36 @@ func TestUnknownProtocolIsRejected(t *testing.T) {
 	path = writeTemp(t, "auth.json", `{"username": "u", "privProtocol": "TWOFISH"}`)
 	if _, err := LoadAuth(path); err == nil {
 		t.Fatal("expected an unknown privacy protocol to be rejected")
+	}
+}
+
+// TestOverrideEngineID covers the -engineid flag: it beats the file, it is
+// validated exactly as the file's value is, and a rejected override leaves the
+// configured engine ID intact rather than half-applied — every user's keys are
+// localized against it, so a partial override would be a silent key change.
+func TestOverrideEngineID(t *testing.T) {
+	cfg := &AuthConfig{EngineID: "printer-lab-3", Users: []UserConfig{{Username: "u"}}}
+
+	if err := cfg.OverrideEngineID("switch-7"); err != nil {
+		t.Fatalf("overriding with a label: %v", err)
+	}
+	if got := cfg.EngineIDLabel(); got != "switch-7" {
+		t.Errorf("engine label = %q, want switch-7", got)
+	}
+
+	for _, bad := range []struct{ name, value string }{
+		{"empty", ""},
+		{"blank", "   "},
+		{"invalid hex", "0xnothex"},
+		{"too long", strings.Repeat("x", 28)},
+	} {
+		t.Run(bad.name, func(t *testing.T) {
+			if err := cfg.OverrideEngineID(bad.value); err == nil {
+				t.Fatalf("expected %q to be rejected", bad.value)
+			}
+			if got := cfg.EngineIDLabel(); got != "switch-7" {
+				t.Errorf("a rejected override changed the engine ID to %q", got)
+			}
+		})
 	}
 }

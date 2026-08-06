@@ -297,6 +297,27 @@ func LoadAuth(path string) (*AuthConfig, error) {
 	return cfg, nil
 }
 
+// OverrideEngineID replaces the engine ID the file supplied. It exists for the
+// published container, which bakes in the example configuration: changing the
+// identity would otherwise mean mounting a whole auth.json for one string.
+//
+// An explicitly empty value is an error rather than a fall back to the default,
+// for the same reason an unknown protocol name is: a flag that was passed and
+// then quietly ignored leaves every key derived from something the caller did
+// not ask for, with nothing to explain the authentication failures that follow.
+func (a *AuthConfig) OverrideEngineID(v string) error {
+	if strings.TrimSpace(v) == "" {
+		return fmt.Errorf("engineID override is empty; omit the flag to use the configured value")
+	}
+	// Validated on a copy, so a rejected override cannot leave a half-applied
+	// engine ID behind: every user's keys localize against it.
+	if _, err := (AuthConfig{EngineID: v}).EngineIDData(); err != nil {
+		return err
+	}
+	a.EngineID = v
+	return nil
+}
+
 // ValueFile is the on-disk representation of the values JSON file.
 type ValueFile struct {
 	Values []ValueDef `json:"values"`

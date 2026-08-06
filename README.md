@@ -69,6 +69,8 @@ Then open <http://localhost:8080> for the UI.
 | `-http`     | `:8080`          | `host:port` the web UI listens on             |
 | `-auth`     | `auth.json`      | path to the credentials JSON file             |
 | `-values`   | `values.json`    | path to the values JSON file                  |
+| `-engineid` | *(from `-auth`)* | engine ID to serve as, overriding the auth file |
+
 
 ## Operations
 
@@ -216,7 +218,19 @@ published.
   **It is an input to key derivation, not just a name**: USM localizes every
   user's keys against it, so changing it changes every key. A client configured
   for the old one fails to authenticate, which looks exactly like a wrong
-  passphrase.
+  passphrase. `-engineid` overrides this value, which is how the published
+  container is given an identity without mounting a replacement `auth.json`:
+
+  ```sh
+  docker run --rm -p 1161:1161/udp -p 8080:8080 \
+    ghcr.io/lcmscheid/snmp-fault-agent -engineid switch-7
+  ```
+
+  Arguments given to `docker run` are appended to the image's baked-in ones, and
+  a flag repeated later wins — so any flag in the table above can be overridden
+  this way without restating the rest. They are part of the image's entrypoint,
+  so a deployment that replaces the command outright (a Kubernetes `command:`,
+  a compose `entrypoint:`) inherits none of them and must supply them itself.
 - The security level (`noAuthNoPriv` / `authNoPriv` / `authPriv`) is inferred
   from which protocols are set. An unknown protocol name is an **error**, not a
   silent fall back to `none` — a typo that quietly downgrades a user makes every
