@@ -56,8 +56,8 @@ type FaultSet struct {
 	//
 	// These two faults invalidate the engine state a client discovered earlier,
 	// which the agent then answers with a usmStatsNotInTimeWindows report — see
-	// timeliness.go, which implements the check because GoSNMPServer v0.5.2 has
-	// none. A client holding cached state must resynchronise from that report
+	// engine_report.go, which implements that check and the four other RFC 3414
+	// §3.2 checks because GoSNMPServer v0.5.2 implements almost none of them. A client holding cached state must resynchronise from that report
 	// and retry; one that does not is stuck, which is the point.
 
 	// EngineTimeOffset is added to the reported engine time, so a client that

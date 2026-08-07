@@ -25,10 +25,18 @@ func syncedClient(t *testing.T, endpoint string) (*gosnmp.GoSNMP, uint32, uint32
 	return client, usm.AuthoritativeEngineBoots, usm.AuthoritativeEngineTime
 }
 
-// craftGet builds an authenticated GET claiming whatever engine boots and time
-// the caller wants. A normal client would send what it discovered; this is the
-// only way to present stale values on purpose.
+// craftGet builds an authenticated, reportable GET claiming whatever engine
+// boots and time the caller wants. A normal client would send what it
+// discovered; this is the only way to present stale values on purpose.
 func craftGet(t *testing.T, auth *AuthConfig, username string, boots, engineTime uint32) []byte {
+	t.Helper()
+	return craftGetFlags(t, auth, username, gosnmp.AuthPriv|gosnmp.Reportable, boots, engineTime)
+}
+
+// craftGetFlags is craftGet with the message flags chosen by the caller, which
+// is how the two things a client never varies on purpose — its security level,
+// and whether it asks to be reported on — are put under test.
+func craftGetFlags(t *testing.T, auth *AuthConfig, username string, flags gosnmp.SnmpV3MsgFlags, boots, engineTime uint32) []byte {
 	t.Helper()
 	usm, err := auth.UsmUserWithEngine(username)
 	if err != nil {
@@ -42,7 +50,7 @@ func craftGet(t *testing.T, auth *AuthConfig, username string, boots, engineTime
 
 	pkt := &gosnmp.SnmpPacket{
 		Version:            gosnmp.Version3,
-		MsgFlags:           gosnmp.AuthPriv | gosnmp.Reportable,
+		MsgFlags:           flags,
 		SecurityModel:      gosnmp.UserSecurityModel,
 		SecurityParameters: usm,
 		ContextEngineID:    usm.AuthoritativeEngineID,
@@ -63,6 +71,15 @@ func craftGet(t *testing.T, auth *AuthConfig, username string, boots, engineTime
 // test's back.
 func exchange(t *testing.T, endpoint string, msg []byte) *gosnmp.SnmpPacket {
 	t.Helper()
+	return exchangeAs(t, endpoint, msg, testAuth(t))
+}
+
+// exchangeAs is exchange with the credentials to read the reply supplied. A
+// report answering a user the agent does not serve names that user, so decoding
+// it needs the configuration the request was built from rather than the
+// agent's.
+func exchangeAs(t *testing.T, endpoint string, msg []byte, auth *AuthConfig) *gosnmp.SnmpPacket {
+	t.Helper()
 	conn, err := net.Dial("udp", endpoint)
 	if err != nil {
 		t.Fatalf("dialling the agent: %v", err)
@@ -79,14 +96,14 @@ func exchange(t *testing.T, endpoint string, msg []byte) *gosnmp.SnmpPacket {
 	if err != nil {
 		t.Fatalf("reading the reply: %v", err)
 	}
-	pkt, err := decodePacket(buf[:n], testAuth(t))
+	pkt, err := decodePacket(buf[:n], auth)
 	if err != nil {
 		t.Fatalf("decoding the reply: %v", err)
 	}
 	return pkt
 }
 
-// assertTimelinessReport checks a reply is the RFC 3414 §3.2 (7b) answer to an
+// assertTimelinessReport checks a reply is the RFC 3414 §3.2 (7a) answer to an
 // out-of-window request, and that it carries the engine state a client needs in
 // order to resynchronise — a report a client cannot learn from is useless.
 func assertTimelinessReport(t *testing.T, pkt *gosnmp.SnmpPacket, wantBoots uint32) {
@@ -284,25 +301,7 @@ func TestUnauthenticatedStaleEngineIDIsReported(t *testing.T) {
 		t.Fatalf("setting engineIDChange: %v", err)
 	}
 
-	usm, err := testAuth(t).UsmUserWithEngine("noauthuser")
-	if err != nil {
-		t.Fatalf("building USM parameters: %v", err)
-	}
-	pkt := &gosnmp.SnmpPacket{
-		Version:            gosnmp.Version3,
-		MsgFlags:           gosnmp.NoAuthNoPriv | gosnmp.Reportable,
-		SecurityModel:      gosnmp.UserSecurityModel,
-		SecurityParameters: usm,
-		ContextEngineID:    usm.AuthoritativeEngineID,
-		PDUType:            gosnmp.GetRequest,
-		MsgID:              4243,
-		RequestID:          2425,
-		Variables:          []gosnmp.SnmpPDU{{Name: sysDescr, Type: gosnmp.Null}},
-	}
-	msg, err := pkt.MarshalMsg()
-	if err != nil {
-		t.Fatalf("marshalling the crafted request: %v", err)
-	}
+	msg := craftGetFlags(t, testAuth(t), "noauthuser", gosnmp.NoAuthNoPriv|gosnmp.Reportable, 0, 0)
 
 	reply := exchange(t, endpoint, msg)
 	if reply.PDUType != gosnmp.Report {
@@ -329,4 +328,168 @@ func TestClearingEngineIDChangeRestoresTheOriginal(t *testing.T) {
 	if pkt.PDUType != gosnmp.GetResponse {
 		t.Fatalf("the original engine ID got %v after the fault was cleared, want a GetResponse", pkt.PDUType)
 	}
+}
+
+// withUser returns the test configuration with one user's credentials altered,
+// which is how a request is crafted with credentials the agent will disagree
+// with: the client's view of the shared secret is a separate document from the
+// agent's, and only here can the two be made to differ.
+//
+// The user is taken from the configuration the agent is serving rather than
+// restated, so a test says which *one* field it got wrong and cannot silently
+// become a test of a different field when the credentials move. Renaming the
+// user adds it instead of replacing it, which is how a request names a user the
+// agent does not serve at all.
+func withUser(t *testing.T, username string, change func(*UserConfig)) *AuthConfig {
+	t.Helper()
+	cfg := *testAuth(t)
+	u, ok := cfg.FindUser(username)
+	if !ok {
+		t.Fatalf("the test configuration serves no user named %q", username)
+	}
+	change(&u)
+
+	users := append([]UserConfig(nil), cfg.Users...)
+	for i, existing := range users {
+		if existing.Username == u.Username {
+			users[i] = u
+			cfg.Users = users
+			return &cfg
+		}
+	}
+	cfg.Users = append(users, u)
+	return &cfg
+}
+
+// assertReport checks a reply is a Report carrying one named counter, and
+// nothing else. Every credential report is asserted through here, because the
+// varbind is the whole message: a client branches on which counter came back.
+func assertReport(t *testing.T, pkt *gosnmp.SnmpPacket, oid string) {
+	t.Helper()
+	if pkt.PDUType != gosnmp.Report {
+		t.Fatalf("expected a Report PDU, got %v", pkt.PDUType)
+	}
+	if len(pkt.Variables) != 1 || pkt.Variables[0].Name != "."+oid {
+		t.Fatalf("expected one .%s varbind, got %v", oid, pkt.Variables)
+	}
+}
+
+// TestWrongAuthPassphraseGetsAWrongDigestsReport is RFC 3414 §3.2 (6), and it
+// is two claims at once. A client that got the passphrase wrong is told so,
+// rather than left to time out and blame the network. And the request is not
+// answered: its digest never checked out, so as far as this engine can tell it
+// was forged, and building a GetResponse for it — even one the client will
+// discard as inauthentic — is behaviour no real engine has.
+//
+// The report is unauthenticated because it has to be: we would sign it with the
+// key the client does not have.
+func TestWrongAuthPassphraseGetsAWrongDigestsReport(t *testing.T) {
+	endpoint, _ := startTestAgent(t)
+	_, boots, engineTime := syncedClient(t, endpoint)
+
+	wrong := withUser(t, "testuser", func(u *UserConfig) {
+		u.AuthPassphrase = "not-the-agents-passphrase"
+	})
+
+	pkt := exchange(t, endpoint, craftGet(t, wrong, "testuser", boots, engineTime))
+	assertReport(t, pkt, usmStatsWrongDigests)
+	if pkt.MsgFlags&gosnmp.AuthNoPriv != 0 {
+		t.Fatalf("the report was authenticated (flags %v); a client with the wrong key cannot verify it", pkt.MsgFlags)
+	}
+}
+
+// TestWrongPrivPassphraseGetsADecryptionErrorReport is RFC 3414 §3.2 (8): the
+// authentication passphrase was right and the privacy one was not, and saying
+// so is the whole value of the report — the two failures are one timeout
+// otherwise.
+//
+// This report is authenticated, unlike the one above, and that difference is
+// the point of asserting on it: reaching step (8) means the digest verified, so
+// the client holds the key to check ours.
+func TestWrongPrivPassphraseGetsADecryptionErrorReport(t *testing.T) {
+	endpoint, _ := startTestAgent(t)
+	_, boots, engineTime := syncedClient(t, endpoint)
+
+	wrong := withUser(t, "testuser", func(u *UserConfig) {
+		u.PrivPassphrase = "not-the-agents-passphrase"
+	})
+
+	pkt := exchange(t, endpoint, craftGet(t, wrong, "testuser", boots, engineTime))
+	assertReport(t, pkt, usmStatsDecryptionErrors)
+	if pkt.MsgFlags&gosnmp.AuthNoPriv == 0 {
+		t.Fatalf("the report was unauthenticated (flags %v); the client's auth key was right, so it can and should check ours", pkt.MsgFlags)
+	}
+}
+
+// TestUnknownUserGetsAnUnknownUserNamesReport is RFC 3414 §3.2 (4). The agent
+// has no key for a user it does not serve, so it can neither check the
+// request's digest nor sign its own answer — which is what makes this report
+// unauthenticated, and what makes it the only thing a client mistyping -u can
+// be told.
+func TestUnknownUserGetsAnUnknownUserNamesReport(t *testing.T) {
+	endpoint, _ := startTestAgent(t)
+	_, boots, engineTime := syncedClient(t, endpoint)
+
+	ghost := withUser(t, "testuser", func(u *UserConfig) {
+		u.Username = "nosuchuser"
+	})
+
+	pkt := exchangeAs(t, endpoint, craftGet(t, ghost, "nosuchuser", boots, engineTime), ghost)
+	assertReport(t, pkt, usmStatsUnknownUserNames)
+	if pkt.MsgFlags&gosnmp.AuthNoPriv != 0 {
+		t.Fatalf("the report was authenticated (flags %v); the agent has no key for an unknown user", pkt.MsgFlags)
+	}
+	usm, ok := pkt.SecurityParameters.(*gosnmp.UsmSecurityParameters)
+	if !ok || usm.UserName != "nosuchuser" {
+		t.Fatalf("the report did not name the user it was answering, so a client cannot tell whose request it was: %v", pkt.SecurityParameters)
+	}
+}
+
+// TestDiscoveryIsNotReported guards the checks above against the one v3
+// exchange that legitimately carries no engine ID, no user name and no digest.
+// Every one of them would fire on a discovery request; the agent must leave it
+// to the library, or no client ever gets as far as its first authenticated GET.
+func TestDiscoveryIsNotReported(t *testing.T) {
+	endpoint, _ := startTestAgent(t)
+	client := newClient(t, endpoint)
+	if _, err := client.Get([]string{sysDescr}); err != nil {
+		t.Fatalf("a client discovering from scratch could not get a value: %v", err)
+	}
+}
+
+// silence asserts the agent sends nothing back at all, which is the only
+// observable difference between a request discarded and one answered.
+func silence(t *testing.T, endpoint string, msg []byte) {
+	t.Helper()
+	conn, err := net.Dial("udp", endpoint)
+	if err != nil {
+		t.Fatalf("dialling the agent: %v", err)
+	}
+	defer conn.Close()
+	if _, err := conn.Write(msg); err != nil {
+		t.Fatalf("sending the crafted request: %v", err)
+	}
+	if err := conn.SetReadDeadline(time.Now().Add(500 * time.Millisecond)); err != nil {
+		t.Fatalf("setting a read deadline: %v", err)
+	}
+	buf := make([]byte, maxDatagram)
+	if n, err := conn.Read(buf); err == nil {
+		t.Fatalf("the agent answered a request it cannot authenticate with %d bytes", n)
+	}
+}
+
+// TestAForgedRequestIsNeverAnswered pins the half of RFC 3414 §3.2 that is not
+// about reports at all: a message that fails a check is *discarded*, and only
+// the report answering it is conditional on the reportable flag (RFC 3412
+// §6.4). A forger is under no obligation to set that flag, so a check that
+// returned early on it would leave the agent answering exactly the requests it
+// cannot authenticate — which is the behaviour the digest check exists to stop.
+func TestAForgedRequestIsNeverAnswered(t *testing.T) {
+	endpoint, _ := startTestAgent(t)
+	_, boots, engineTime := syncedClient(t, endpoint)
+
+	wrong := withUser(t, "testuser", func(u *UserConfig) {
+		u.AuthPassphrase = "not-the-agents-passphrase"
+	})
+	silence(t, endpoint, craftGetFlags(t, wrong, "testuser", gosnmp.AuthPriv, boots, engineTime))
 }

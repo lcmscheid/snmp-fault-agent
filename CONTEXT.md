@@ -19,6 +19,16 @@ all — drop, delay, duplicate, truncate, corrupt.
 A fault applied to the decoded response before it is re-marshalled — tooBig,
 non-increasing OID, genErr. The message is well-formed and wrong.
 
+**Engine report**:
+Any of the five `usmStats` Report PDUs the agent returns instead of a response,
+when RFC 3414 §3.2 says a v3 request must not be processed. They are not faults
+and are never toggled: they are the engine being *right*, and a client's
+rejection-handling code is what they exist to reach. Three of them —
+the **credential reports** — say the client's credentials are wrong; two say its
+cached engine state is. Implemented here because the underlying library
+implements almost none of §3.2.
+_Avoid_: USM error, rejection, failure response
+
 **Timeliness report**:
 The `usmStatsNotInTimeWindows` Report PDU an authoritative engine returns when a
 request's claimed engine boots or time are outside the RFC 3414 §2.2.3 window.
@@ -37,6 +47,18 @@ whose keys are localized to the engine ID it named could not verify a digest
 made with any other one. Recovering from it means re-discovering *and*
 re-localizing, not just resynchronising.
 _Avoid_: discovery response, engine ID report
+
+**Credential report**:
+The three **engine reports** that answer a request whose credentials the agent
+cannot accept: `usmStatsUnknownUserNames` (no such user, §3.2 (4)),
+`usmStatsWrongDigests` (the digest does not verify, §3.2 (6)) and
+`usmStatsDecryptionErrors` (the payload will not decrypt, §3.2 (8)). The first
+two are sent **unauthenticated**; the third is reached only once the digest has
+verified, so it is signed with a key the client shares. Their point is that a
+client can tell a wrong passphrase from a dead network — without them every one
+of these is a timeout — and that a request whose digest never checked out stops
+being answered at all.
+_Avoid_: auth failure, credential error
 
 **Engine ID**:
 The octets identifying this agent as an authoritative SNMPv3 engine. Not only a

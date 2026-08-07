@@ -199,8 +199,15 @@ func serveConn(conn *net.UDPConn, master *server.MasterAgent, faults *Faults, au
 			log.Printf("building %s report for %s (%v); discarding the request", counter, remote, err)
 			continue
 		}
-		reported := len(response) > 0
+		// A counter means the request failed an RFC 3414 §3.2 check and must not
+		// be answered — whether or not it asked to be reported on, and so
+		// whether or not there is a report to send back.
+		reported := counter != ""
 		if reported {
+			if len(response) == 0 {
+				log.Printf("DISCARDED %s from %s; the request did not ask to be reported on", counter, remote)
+				continue
+			}
 			log.Printf("REPORT %s to %s", counter, remote)
 		} else {
 			response, err = master.ResponseForBuffer(request)
@@ -304,12 +311,8 @@ func applySemanticFaults(response, request []byte, active FaultSet, auth *AuthCo
 // copy of the buffer: otherwise a failed decode would leave us sending a
 // half-decrypted response that the client rejects as inauthentic.
 func decodePacket(msg []byte, auth *AuthConfig) (*gosnmp.SnmpPacket, error) {
-	probe := gosnmp.GoSNMP{SecurityParameters: &gosnmp.UsmSecurityParameters{}}
-	pkt, err := probe.SnmpDecodePacket(scratchCopy(msg))
+	pkt, err := decodeHeader(msg)
 	if pkt == nil {
-		if err == nil {
-			err = errors.New("message did not decode to a packet")
-		}
 		return nil, err
 	}
 	if pkt.Version != gosnmp.Version3 {
@@ -342,6 +345,23 @@ func decodePacket(msg []byte, auth *AuthConfig) (*gosnmp.SnmpPacket, error) {
 
 	handle := gosnmp.GoSNMP{SecurityParameters: usm}
 	return handle.SnmpDecodePacket(scratchCopy(msg))
+}
+
+// decodeHeader parses a message with no credentials at all. For v1/v2c that is
+// the whole message; for v3 it stops once the header has been read, since the
+// security parameters name a user whose keys the caller has to supply.
+//
+// A v3 message therefore comes back with an error and a packet at the same
+// time, and the packet is the point: the engine ID, user name, engine state and
+// digest it carries are what the RFC 3414 §3.2 checks are made of, and they are
+// all a message we hold no usable key for will ever give us.
+func decodeHeader(msg []byte) (*gosnmp.SnmpPacket, error) {
+	probe := gosnmp.GoSNMP{SecurityParameters: &gosnmp.UsmSecurityParameters{}}
+	pkt, err := probe.SnmpDecodePacket(scratchCopy(msg))
+	if pkt == nil && err == nil {
+		err = errors.New("message did not decode to a packet")
+	}
+	return pkt, err
 }
 
 // usernameOf reads the USM user name from a decoded v3 packet, returning "" if

@@ -572,3 +572,56 @@ func TestNetSNMPRecoversFromAnEngineIDChange(t *testing.T) {
 		}
 	})
 }
+
+// TestNetSNMPWrongCredentialsAreRefused is the foreign half of the three
+// credential reports. Each subtest gets one thing wrong and nothing else, so
+// what fails is the credential rather than the setup — the control run at the
+// end is the same command with all three right.
+//
+// The assertion is only that no value comes back, which is the same shape as a
+// timeout, and deliberately so: net-snmp does name each of these correctly
+// against this agent ("Authentication failure", "Decryption error", "Unknown
+// user name"), but that is wording, and how fast it gives up is wording in
+// disguise — 5.9.4 discards an unauthenticated report answering an authPriv
+// request and waits out its timeout instead (ADR-0001). What the reports carry,
+// and that they are sent at all, is pinned in-process where no client's
+// willingness to act on them applies.
+func TestNetSNMPWrongCredentialsAreRefused(t *testing.T) {
+	endpoint, _ := startTestAgent(t)
+
+	for _, tc := range []struct {
+		name  string
+		flags []string
+	}{
+		{"wrong auth passphrase", []string{"-A", "not-the-agents-passphrase"}},
+		{"wrong priv passphrase", []string{"-X", "not-the-agents-passphrase"}},
+		{"unknown user", []string{"-u", "nosuchuser"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			// The overriding flag comes last: net-snmp takes the final value of
+			// a repeated option, which is what lets one wrong credential be
+			// spliced into an otherwise correct invocation.
+			args := append(v3Flags("1"), tc.flags...)
+			out, err := runSNMP(t, "snmpget", append(args, endpoint, sysDescr)...)
+			if err == nil {
+				t.Fatalf("wrong credentials still served a value:\n%s", out)
+			}
+			if code := exitCode(t, err); code == 0 {
+				t.Fatalf("expected a non-zero exit, got %d:\n%s", code, out)
+			}
+			if len(varbinds(out)) != 0 {
+				t.Fatalf("expected no varbind from wrong credentials, got:\n%s", out)
+			}
+		})
+	}
+
+	t.Run("control", func(t *testing.T) {
+		out, err := runSNMP(t, "snmpget", append(v3Flags("1"), endpoint, sysDescr)...)
+		if err != nil {
+			t.Fatalf("the same command with the right credentials failed: %v\n%s", err, out)
+		}
+		if len(varbinds(out)) != 1 {
+			t.Fatalf("expected one varbind from the control run, got:\n%s", out)
+		}
+	})
+}

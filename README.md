@@ -126,18 +126,40 @@ decoding the agent's own response, mutating it, and re-marshalling — so the
 message is **correctly authenticated and encrypted** and is wrong in exactly the
 intended way, rather than merely failing its digest check.
 
-The checks behind the three engine faults are this agent's own:
+### The USM checks are ours
+
 [GoSNMPServer](https://github.com/slayercat/GoSNMPServer) v0.5.2 implements
-neither — no 150-second window (RFC 3414 §2.2.3) and no `usmStats` reports at
-all. So an authenticated request whose engine boots or time fall outside the
-window is answered here with a `usmStatsNotInTimeWindows` Report PDU,
-authenticated at `authNoPriv` with the requesting user's key and carrying the
-agent's real engine state; and one naming an engine ID that is not ours is
-answered with a `usmStatsUnknownEngineIDs` report (RFC 3414 §3.2 (3)), sent
-**unauthenticated**, because a client whose keys are localized to the engine ID
-it named could not verify a digest made with the new one. Both are what a client
-recovers from; a client that cannot is stuck at the first stale request, which
-is the path these faults exist to reach.
+almost none of RFC 3414 §3.2 — no 150-second window (§2.2.3), no digest
+verification, no `usmStats` reports at all. So the checks behind the three
+engine faults are this agent's own, and so are the three that answer wrong
+credentials. A v3 request that fails one is answered with a Report PDU and never
+processed:
+
+| Report | Sent when | Level |
+|---|---|---|
+| `usmStatsUnknownEngineIDs` | the request names an engine ID that is not ours (§3.2 (3)) | unauthenticated |
+| `usmStatsUnknownUserNames` | it names a user the agent does not serve (§3.2 (4)) | unauthenticated |
+| `usmStatsWrongDigests` | its digest does not verify — a wrong `-A` (§3.2 (6)) | unauthenticated |
+| `usmStatsNotInTimeWindows` | its engine boots or time are outside the window (§3.2 (7a)) | `authNoPriv` |
+| `usmStatsDecryptionErrors` | its payload will not decrypt — a wrong `-X` (§3.2 (8)) | `authNoPriv` |
+
+The level is not a style choice, though only `usmStatsNotInTimeWindows` has it
+fixed by the RFC (§3.2 (7a) requires `authNoPriv`). The first three fail before
+the agent and the client are known to share a key — the client named another
+engine, a user we do not have, or the wrong passphrase — so a signed report is
+one it could not verify. The last two are reached only once the digest has
+verified, so they are authenticated with the requesting user's key and carry the
+agent's real engine state, which is what a client resynchronises from.
+
+The reports are what makes the client's error handling reachable at all: without
+them a wrong passphrase, an unknown user and an unplugged cable are one timeout,
+and a client stuck on stale engine state is never told why.
+Discovery is left to the library untouched — a request naming no engine at all
+carries no user name and no digest by design.
+
+Verifying the digest also means the agent stops answering requests it cannot
+authenticate, which is what a real engine does and what this one used to get
+wrong.
 
 > A client that discovers *after* a fault is set sees a consistent view and
 > notices nothing — the faults invalidate cached state, so there has to be
