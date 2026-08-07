@@ -13,6 +13,13 @@ faults in both places would buy a duplicate check and a second place to update.
 - Assertions are on exit codes and semantics rather than net-snmp's exact
   wording, so the unpinned `snmp` package can drift with the runner image
   without turning CI red for reasons unrelated to a change.
+- **Timing is wording in disguise.** An assertion that net-snmp answered
+  *quickly*, meant to show it read a report rather than waiting out a timeout,
+  pins a version just as firmly as matching on its text. It cost a red CI run to
+  learn: 5.9.5.2 surfaces an unauthenticated `usmStatsUnknownEngineIDs` answering
+  an authPriv request and exits at once, while 5.9.4 discards it and times out.
+  The agent sends the same report to both. Assert what the client *achieved* — a
+  value, or none — never how it reacted or how fast.
 - `EngineTimeOffset` and `EngineBootsBump` have no foreign-client coverage: a
   CLI client is a fresh process that synchronises with whatever the agent
   reports, so it never holds the stale engine state those faults invalidate.

@@ -7,7 +7,6 @@ import (
 	"regexp"
 	"strings"
 	"testing"
-	"time"
 )
 
 // Foreign-client tests: net-snmp drives the agent and the assertion is on what
@@ -525,27 +524,31 @@ func TestNetSNMPRecoversFromAnEngineIDChange(t *testing.T) {
 	}
 
 	// Pinned to the old engine ID, net-snmp cannot recover — -e means the user
-	// chose that engine — so the failure is expected. What has to be shown is
-	// that it failed on our report rather than on silence, and a non-zero exit
-	// alone does not say which: a timeout exits non-zero too, and silence is
-	// exactly what this agent used to answer with. Hence the generous -t and
-	// the elapsed check. Timing rather than wording, so net-snmp's diagnostic
-	// can be reworded without turning CI red (ADR-0001).
+	// chose that engine — so the failure is expected and is all this subtest
+	// asserts.
+	//
+	// It would be better to assert that net-snmp *read* the report rather than
+	// merely got nothing, and that is not available at any version: 5.9.5.2
+	// surfaces it ("Unknown engine ID", immediately), while 5.9.4 discards an
+	// unauthenticated report answering an authPriv request and waits out the
+	// timeout instead. Both behaviours are the client's to choose; the agent
+	// sends the same report either way, which its own log line shows. Asserting
+	// on which one happens — by wording *or* by how fast it happens — pins a
+	// net-snmp version, and ADR-0001 keeps net-snmp unpinned on purpose.
+	//
+	// The evidence that the report is emitted, unauthenticated, and carries the
+	// new engine ID is in TestStaleEngineIDGetsAnUnknownEngineIDReport, where it
+	// depends on no client's willingness to act on it.
 	t.Run("stale engine ID", func(t *testing.T) {
-		const timeout = 5 * time.Second
-		start := time.Now()
-		out, err := runSNMP(t, "snmpget", append(v3Flags("5"), "-e", oldEngine, endpoint, sysDescr)...)
-		elapsed := time.Since(start)
-
+		out, err := runSNMP(t, "snmpget", append(v3Flags("1"), "-e", oldEngine, endpoint, sysDescr)...)
 		if err == nil {
 			t.Fatalf("the replaced engine ID still served a value:\n%s", out)
 		}
 		if code := exitCode(t, err); code == 0 {
 			t.Fatalf("expected a non-zero exit, got %d:\n%s", code, out)
 		}
-		if elapsed > timeout/2 {
-			t.Fatalf("net-snmp took %s of its %s timeout, so it waited out silence rather than reading a report:\n%s",
-				elapsed.Round(time.Millisecond), timeout, out)
+		if len(varbinds(out)) != 0 {
+			t.Fatalf("expected no varbind from the replaced engine ID, got:\n%s", out)
 		}
 	})
 
