@@ -46,6 +46,17 @@ docker run --rm -p 1161:1161/udp -p 8080:8080 \
   ghcr.io/lcmscheid/snmp-fault-agent
 ```
 
+> **Pin a version in CI.** `latest` moves with `main`, so a change here can turn
+> your build red for reasons that are not yours:
+>
+> ```sh
+> docker run --rm -p 1161:1161/udp -p 8080:8080 ghcr.io/lcmscheid/snmp-fault-agent:0.1.0
+> ```
+>
+> The fault names and the HTTP control surface below are what a client's tests
+> drive, and they are stable within a minor version — `:0.1` tracks patches
+> without them changing under you. Images are `linux/amd64` only.
+
 ### From source
 
 ```sh
