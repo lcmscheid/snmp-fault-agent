@@ -56,11 +56,6 @@ type reportCounters struct {
 // timeWindowSeconds is the ±150 seconds of RFC 3414 §2.2.3.
 const timeWindowSeconds = 150
 
-// engineBootsMax is the boots value at which RFC 3414 §2.2.2 says an engine may
-// never be trusted as authoritative again, so every authenticated request is
-// out of window from then on.
-const engineBootsMax = 2147483647
-
 // engineReport implements the RFC 3414 §3.2 checks GoSNMPServer v0.5.2 leaves
 // out entirely. A v3 request that claims engine state or credentials this
 // engine cannot serve comes back with the name of the counter it incremented,
@@ -222,14 +217,9 @@ func authentic(request []byte, usm *gosnmp.UsmSecurityParameters, received strin
 		blanked[idx+i] = 0
 	}
 	mac := hmac.New(usm.AuthenticationProtocol.HashType().New, usm.SecretKey)
-	if _, err := mac.Write(blanked); err != nil {
-		return false
-	}
+	mac.Write(blanked)
 	sum := mac.Sum(nil)
-	if len(received) > len(sum) {
-		return false
-	}
-	return hmac.Equal([]byte(received), sum[:len(received)])
+	return len(received) <= len(sum) && hmac.Equal([]byte(received), sum[:len(received)])
 }
 
 // reported packages a check's verdict. The counter comes back whatever the
@@ -319,15 +309,11 @@ func reportPDU(pkt *gosnmp.SnmpPacket, usm *gosnmp.UsmSecurityParameters, flags 
 
 // inTimeWindow applies RFC 3414 §2.2.3 from the authoritative engine's side:
 // the boots counter must match exactly, and the clock must be within 150
-// seconds either way. A boots counter at its maximum means the engine may never
-// be trusted as authoritative again.
+// seconds either way.
 func inTimeWindow(msgBoots, msgTime, boots, now uint32) bool {
-	if boots == engineBootsMax || msgBoots != boots {
+	if msgBoots != boots {
 		return false
 	}
 	drift := int64(msgTime) - int64(now)
-	if drift < 0 {
-		drift = -drift
-	}
-	return drift <= timeWindowSeconds
+	return drift >= -timeWindowSeconds && drift <= timeWindowSeconds
 }
