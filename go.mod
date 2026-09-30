@@ -21,9 +21,11 @@ require (
 	golang.org/x/sys v0.15.0 // indirect
 )
 
-// GoSNMPServer answers multi-varbind GETNEXT and instance GETBULK
-// non-repeaters wrongly (#11, slayercat/GoSNMPServer#19), and refuses a SET
-// with readOnly or genErr where RFC 3416 names notWritable and wrongType (#10),
-// and counts error-index from 0 where RFC 3416 counts from 1 (#12).
+// GoSNMPServer departs from RFC 3416 in three ways the fork fixes:
+//   - multi-varbind GETNEXT and instance GETBULK non-repeaters are answered
+//     wrongly (#11, slayercat/GoSNMPServer#19);
+//   - a SET is refused with readOnly or genErr where the RFC names
+//     notWritable and wrongType (#10);
+//   - error-index counts from 0 where the RFC counts from 1 (#12).
 // The fork carries the fixes until upstream releases them; drop this line then.
-replace github.com/slayercat/GoSNMPServer => github.com/lcmscheid/GoSNMPServer v0.0.0-20260930205453-c35d25cc2ef4
+replace github.com/slayercat/GoSNMPServer => github.com/lcmscheid/GoSNMPServer v0.0.0-20260930211225-075bfa4e4027
