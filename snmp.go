@@ -46,9 +46,9 @@ func buildAgent(auth *AuthConfig, store *Store, faults *Faults) (*server.MasterA
 				return val, nil
 			},
 		}
-		// A nil OnSet is how the library marks an OID read-only: it answers with
-		// the readOnly error rather than calling us. That is the behaviour we
-		// want for a read-only entry, so leave the hook off entirely.
+		// A nil OnSet is how the library marks an OID read-only: it answers
+		// notWritable rather than calling us. That is the behaviour we want for
+		// a read-only entry, so leave the hook off entirely.
 		if !e.ReadOnly {
 			item.OnSet = func(value interface{}) error {
 				return store.SetFromSNMP(oid, value)

@@ -326,9 +326,9 @@ type ValueDef struct {
 	OID     string   `json:"oid"`
 	Type    string   `json:"type"` // string, integer, gauge, counter, timeticks, oid
 	Options []string `json:"values"`
-	// ReadOnly refuses SET on this OID, so the agent answers with the readOnly
-	// error. A client's SET error handling is otherwise unreachable without a
-	// real device that happens to expose a non-writable object.
+	// ReadOnly refuses SET on this OID, so the agent answers notWritable. A
+	// client's SET error handling is otherwise unreachable without a real
+	// device that happens to expose a non-writable object.
 	ReadOnly bool `json:"readOnly"`
 }
 
