@@ -443,6 +443,68 @@ func TestNetSNMPBulkWalk(t *testing.T) {
 	}
 }
 
+// getNextOIDs asks net-snmp for the successors of oids and returns the OIDs it
+// names, in order.
+func getNextOIDs(t *testing.T, flags []string, endpoint string, oids ...string) []string {
+	t.Helper()
+	args := append(append(flags, "-On", endpoint), oids...)
+	out, err := runSNMP(t, "snmpgetnext", args...)
+	if err != nil {
+		t.Fatalf("GETNEXT %v failed: %v\n%s", oids, err, out)
+	}
+	return responseOIDs(out)
+}
+
+// responseOIDs returns the OID each varbind line of -On output names.
+func responseOIDs(out string) []string {
+	var oids []string
+	for _, line := range varbinds(out) {
+		oids = append(oids, strings.SplitN(line, " = ", 2)[0])
+	}
+	return oids
+}
+
+// TestNetSNMPGetNextAnswersEachVarbind checks that a GETNEXT carrying several
+// varbinds answers each one as if it had been asked alone (RFC 3416 §4.2.2).
+// GoSNMPServer v0.5.2 answered them all from the last one; see #11.
+func TestNetSNMPGetNextAnswersEachVarbind(t *testing.T) {
+	endpoint, _ := startTestAgent(t)
+	// Instances and subtrees both, and a successor that crosses into another
+	// subtree, so a lookup that only works for one kind of name shows up.
+	requested := []string{sysDescr, sysContact, sysObjects, "1.3.6.1.2.1.2"}
+
+	forEachVersion(t, func(t *testing.T, flags func(timeout string) []string) {
+		var want []string
+		for _, oid := range requested {
+			want = append(want, getNextOIDs(t, flags("1"), endpoint, oid)...)
+		}
+		got := getNextOIDs(t, flags("1"), endpoint, requested...)
+		if strings.Join(got, " ") != strings.Join(want, " ") {
+			t.Fatalf("GETNEXT %v answered\n  %v\nwhere each asked alone answers\n  %v", requested, got, want)
+		}
+	})
+}
+
+// TestNetSNMPBulkNonRepeaterIsAGetNext checks that a GETBULK non-repeater
+// naming an instance is answered with its successor, as a GETNEXT of it alone
+// is (RFC 3416 §4.2.3), rather than with the instance itself; see #11.
+func TestNetSNMPBulkNonRepeaterIsAGetNext(t *testing.T) {
+	endpoint, _ := startTestAgent(t)
+
+	forEachVersion(t, func(t *testing.T, flags func(timeout string) []string) {
+		want := getNextOIDs(t, flags("1"), endpoint, sysDescr)
+		args := append(append(flags("1"), "-On", "-Cn1", "-Cr1", endpoint), sysDescr, sysObjects)
+		out, err := runSNMP(t, "snmpbulkget", args...)
+		if err != nil {
+			t.Fatalf("GETBULK failed: %v\n%s", err, out)
+		}
+		got := responseOIDs(out)
+		if len(got) == 0 || got[0] != want[0] {
+			t.Fatalf("non-repeater %s answered %v; a GETNEXT of it answers %s\n%s", sysDescr, got, want[0], out)
+		}
+	})
+}
+
 // TestNetSNMPRendersDeclaredTypes checks that the types declared in values.json
 // survive the wire: a foreign decoder naming them back is the only evidence the
 // encoding is right rather than merely consistent with our own decoder.
