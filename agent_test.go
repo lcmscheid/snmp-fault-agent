@@ -152,6 +152,10 @@ func TestSetReadOnlyIsRefused(t *testing.T) {
 	if res.Error != gosnmp.NotWritable {
 		t.Fatalf("expected notWritable, got %v", res.Error)
 	}
+	// error-index names the refused varbind, counting from 1 (#12).
+	if res.ErrorIndex != 1 {
+		t.Fatalf("expected error-index 1, got %d", res.ErrorIndex)
+	}
 
 	// And the value must be unchanged.
 	got, err := client.Get([]string{sysDescr})
@@ -180,6 +184,9 @@ func TestSetWrongTypeIsRefused(t *testing.T) {
 	}
 	if res.Error != gosnmp.WrongType {
 		t.Fatalf("expected wrongType, got %v", res.Error)
+	}
+	if res.ErrorIndex != 1 {
+		t.Fatalf("expected error-index 1, got %d", res.ErrorIndex)
 	}
 }
 
