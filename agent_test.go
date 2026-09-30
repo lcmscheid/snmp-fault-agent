@@ -134,7 +134,9 @@ func TestSetIntegerRoundTrip(t *testing.T) {
 }
 
 // TestSetReadOnlyIsRefused reaches a client path that otherwise needs a real
-// device exposing a non-writable object.
+// device exposing a non-writable object. The refusal is notWritable: RFC 3416
+// §4.2 keeps readOnly for SNMPv1 compatibility only and says an SNMPv2 entity
+// never generates it (#10).
 func TestSetReadOnlyIsRefused(t *testing.T) {
 	endpoint, _ := startTestAgent(t)
 	client := newClient(t, endpoint)
@@ -147,8 +149,8 @@ func TestSetReadOnlyIsRefused(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SET request failed outright: %v", err)
 	}
-	if res.Error != gosnmp.ReadOnly {
-		t.Fatalf("expected readOnly, got %v", res.Error)
+	if res.Error != gosnmp.NotWritable {
+		t.Fatalf("expected notWritable, got %v", res.Error)
 	}
 
 	// And the value must be unchanged.
@@ -162,7 +164,8 @@ func TestSetReadOnlyIsRefused(t *testing.T) {
 }
 
 // TestSetWrongTypeIsRefused checks that writing the wrong type fails rather
-// than silently succeeding, which is what a permissive agent would do.
+// than silently succeeding, which is what a permissive agent would do, and
+// fails with the wrongType RFC 3416 §4.2.5 names for it rather than genErr.
 func TestSetWrongTypeIsRefused(t *testing.T) {
 	endpoint, _ := startTestAgent(t)
 	client := newClient(t, endpoint)
@@ -175,8 +178,8 @@ func TestSetWrongTypeIsRefused(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SET request failed outright: %v", err)
 	}
-	if res.Error == gosnmp.NoError {
-		t.Fatal("expected a type-mismatched SET to be refused")
+	if res.Error != gosnmp.WrongType {
+		t.Fatalf("expected wrongType, got %v", res.Error)
 	}
 }
 

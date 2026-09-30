@@ -22,6 +22,7 @@ require (
 )
 
 // GoSNMPServer answers multi-varbind GETNEXT and instance GETBULK
-// non-repeaters wrongly (#11, slayercat/GoSNMPServer#19). The fork carries the
-// fix until upstream releases it; drop this line then.
-replace github.com/slayercat/GoSNMPServer => github.com/lcmscheid/GoSNMPServer v0.0.0-20260930191341-04a09ad9543c
+// non-repeaters wrongly (#11, slayercat/GoSNMPServer#19), and refuses a SET
+// with readOnly or genErr where RFC 3416 names notWritable and wrongType (#10).
+// The fork carries the fixes until upstream releases them; drop this line then.
+replace github.com/slayercat/GoSNMPServer => github.com/lcmscheid/GoSNMPServer v0.0.0-20260930193251-bb75b9b4d209

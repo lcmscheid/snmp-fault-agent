@@ -89,8 +89,8 @@ Then open <http://localhost:8080> for the UI.
 |---|---|
 | **GET / GETNEXT / GETBULK** | Over SNMPv2c and SNMPv3. GETNEXT is what a walk is built from. |
 | **SET** | Writes the value and returns it on the next read. A value not already in the OID's list is **appended as a new option and selected**, so the write shows up in the web UI. |
-| **SET on a read-only OID** | Refused with `readOnly`. Mark an OID with `"readOnly": true` in `values.json`. |
-| **SET with the wrong type** | Refused with `genErr`. (An RFC 3416 §4.2.5 agent would send `wrongType`; the underlying library offers no way to return it.) |
+| **SET on a read-only OID** | Refused with `notWritable`. Mark an OID with `"readOnly": true` in `values.json`. |
+| **SET with the wrong type** | Refused with `wrongType`. |
 
 Both SNMP versions are served at once. v2c exists here because a client under
 development reaches v2c long before it can speak v3, and it needs a
@@ -346,7 +346,7 @@ is chosen at random on startup and changed from the UI or by an SNMP SET.
 }
 ```
 
-- `readOnly` *(optional)*: refuse SET on this OID with the `readOnly` error.
+- `readOnly` *(optional)*: refuse SET on this OID with the `notWritable` error.
   Without it the OID is writable. A client's SET error handling is otherwise
   unreachable without a real device that happens to expose a non-writable
   object.
@@ -383,7 +383,7 @@ snmpget -v2c -c public 127.0.0.1:1161 1.3.6.1.2.1.1.4.0
 
 # a read-only OID refuses the write
 snmpset -v2c -c public 127.0.0.1:1161 1.3.6.1.2.1.1.1.0 s nope
-# Reason: (readOnly) ...
+# Reason: notWritable ...
 ```
 
 Change the value in the web UI and run the command again — the returned value

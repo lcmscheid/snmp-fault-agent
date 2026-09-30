@@ -8,6 +8,7 @@ import (
 	"sync"
 
 	"github.com/gosnmp/gosnmp"
+	server "github.com/slayercat/GoSNMPServer"
 )
 
 // Entry is a single managed OID together with its selectable values and the
@@ -118,8 +119,8 @@ func (s *Store) SetFromSNMP(oid string, value interface{}) error {
 	}
 	// The web UI may change a read-only value — it is the operator, not a
 	// client — but SNMP may not. buildAgent normally prevents this by leaving
-	// OnSet nil so the library answers readOnly itself; the check stands so the
-	// rule lives with the data rather than only at the one call site.
+	// OnSet nil so the library answers notWritable itself; the check stands so
+	// the rule lives with the data rather than only at the one call site.
 	if e.ReadOnly {
 		return fmt.Errorf("oid %q is read-only", oid)
 	}
@@ -157,9 +158,8 @@ const maxWrittenValues = 16
 //
 // The rejection matters: a client that writes an OctetString to an Integer OID
 // should see the SET fail, and against a permissive agent it would silently
-// succeed. GoSNMPServer maps a handler error to genErr rather than the wrongType
-// an RFC 3416 §4.2.5 agent would send, which is the closest signal available
-// without patching the library.
+// succeed. A type mismatch wraps server.ErrWrongType, which GoSNMPServer answers
+// with the wrongType RFC 3416 §4.2.5 names; any other error is a genErr.
 func parseSetValue(typ string, value interface{}) (string, error) {
 	switch typeName(typ) {
 	case "string":
@@ -194,14 +194,14 @@ func parseSetValue(typ string, value interface{}) (string, error) {
 			}
 			n = uint64(v)
 		default:
-			return "", fmt.Errorf("expected an unsigned value for a %s OID, got %T", typeName(typ), value)
+			return "", fmt.Errorf("expected an unsigned value for a %s OID, got %T: %w", typeName(typ), value, server.ErrWrongType)
 		}
 		if n > math.MaxUint32 {
 			return "", fmt.Errorf("%d does not fit in the 32 bits a %s carries", n, typeName(typ))
 		}
 		return strconv.FormatUint(n, 10), nil
 	}
-	return "", fmt.Errorf("expected a %s value, got %T", typeName(typ), value)
+	return "", fmt.Errorf("expected a %s value, got %T: %w", typeName(typ), value, server.ErrWrongType)
 }
 
 // snmpValue converts the currently selected value into the wire type and Go
