@@ -152,6 +152,10 @@ func TestSetReadOnlyIsRefused(t *testing.T) {
 	if res.Error != gosnmp.NotWritable {
 		t.Fatalf("expected notWritable, got %v", res.Error)
 	}
+	// error-index names the refused varbind, counting from 1 (#12).
+	if res.ErrorIndex != 1 {
+		t.Fatalf("expected error-index 1, got %d", res.ErrorIndex)
+	}
 
 	// And the value must be unchanged.
 	got, err := client.Get([]string{sysDescr})
@@ -181,12 +185,27 @@ func TestSetWrongTypeIsRefused(t *testing.T) {
 	if res.Error != gosnmp.WrongType {
 		t.Fatalf("expected wrongType, got %v", res.Error)
 	}
+	if res.ErrorIndex != 1 {
+		t.Fatalf("expected error-index 1, got %d", res.ErrorIndex)
+	}
 }
 
-// TestSetOverV2C confirms SET is not accidentally v3-only.
+// TestSetOverV2C confirms SET is not accidentally v3-only, refusals included.
 func TestSetOverV2C(t *testing.T) {
 	endpoint, _ := startTestAgent(t)
 	client := newV2CClient(t, endpoint)
+
+	res, err := client.Set([]gosnmp.SnmpPDU{{
+		Name:  sysDescr,
+		Type:  gosnmp.OctetString,
+		Value: "overwritten",
+	}})
+	if err != nil {
+		t.Fatalf("v2c SET of a read-only OID failed at transport level: %v", err)
+	}
+	if res.Error != gosnmp.NotWritable || res.ErrorIndex != 1 {
+		t.Fatalf("expected notWritable at error-index 1, got %v at %d", res.Error, res.ErrorIndex)
+	}
 
 	const want = "rack 9, row Z"
 	if _, err := client.Set([]gosnmp.SnmpPDU{{
